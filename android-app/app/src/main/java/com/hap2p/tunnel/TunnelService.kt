@@ -30,6 +30,8 @@ class TunnelService : Service() {
     private var tunnelProcess: Process? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    @Volatile
+    private var isStopping = false
 
     companion object {
         private const val TAG = "HAP2P"
@@ -89,7 +91,7 @@ class TunnelService : Service() {
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HAP2P:TunnelWakeLock")
 
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "HAP2P:TunnelWifiLock")
+        wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL, "HAP2P:TunnelWifiLock")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -118,8 +120,15 @@ class TunnelService : Service() {
             return
         }
 
-        wakeLock?.acquire(24 * 60 * 60 * 1000L) // 24 horas
-        wifiLock?.acquire()
+        isStopping = false
+
+        // Economia de bateria: WakeLock temporário de 30 segundos apenas para a fase inicial de conexão.
+        // O Android Foreground Service (DATA_SYNC) mantém o processo vivo sem precisar travar a CPU em 100% 24 horas por dia.
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+            wakeLock?.acquire(30_000L) // 30 segundos
+            wifiLock?.acquire()
+        } catch (_: Exception) {}
 
         val notification = buildNotification("Buscando Home Assistant na rede P2P...")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -143,10 +152,16 @@ class TunnelService : Service() {
                     nativeLib.setExecutable(true)
                 }
 
+                // Diretório de cache persistente para identidade e endereços recentes do HA
+                val cacheDir = File(filesDir, "p2p_cache")
+                cacheDir.mkdirs()
+
                 val cmd = mutableListOf<String>()
                 cmd.add(nativeLib.absolutePath)
                 cmd.add("-peer")
                 cmd.add(peerId)
+                cmd.add("-cache")
+                cmd.add(cacheDir.absolutePath)
 
                 if (psk.isNotEmpty()) {
                     cmd.add("-psk")
@@ -191,10 +206,19 @@ class TunnelService : Service() {
                 }
 
                 val exitCode = tunnelProcess?.waitFor() ?: -1
-                addLog("Processo do túnel encerrou com código: $exitCode", this@TunnelService)
+                if (!isStopping) {
+                    addLog("Processo do túnel encerrou com código: $exitCode", this@TunnelService)
+                }
+            } catch (e: java.io.IOException) {
+                // Interrupção normal ao encerrar o túnel
+                if (!isStopping && isRunning) {
+                    addLog("[AVISO] Leitura interrompida: ${e.message}", this)
+                }
             } catch (e: Exception) {
-                addLog("[EXCEÇÃO] Falha ao rodar túnel: ${e.message}", this)
-                e.printStackTrace()
+                if (!isStopping) {
+                    addLog("[EXCEÇÃO] Falha ao rodar túnel: ${e.message}", this)
+                    e.printStackTrace()
+                }
             } finally {
                 stopTunnel()
             }
@@ -202,6 +226,7 @@ class TunnelService : Service() {
     }
 
     private fun stopTunnel() {
+        isStopping = true
         isRunning = false
         haState = HAState.STOPPED
         haMessage = "Túnel Parado"
