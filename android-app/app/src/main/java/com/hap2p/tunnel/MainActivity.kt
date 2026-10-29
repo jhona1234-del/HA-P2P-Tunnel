@@ -13,6 +13,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -33,8 +34,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnScanQr: MaterialButton
     private lateinit var btnToggleTunnel: MaterialButton
     private lateinit var btnOpenHA: MaterialButton
-    private lateinit var tvStatus: TextView
+    private lateinit var badgeStatus: TextView
     private lateinit var viewStatusDot: View
+    private lateinit var tvStatusTitle: TextView
+    private lateinit var tvStatusSubtitle: TextView
+    private lateinit var progressBarConnecting: ProgressBar
+    private lateinit var tvLocalAddr: TextView
+    private lateinit var tvConnectedHA: TextView
     private lateinit var tvLogs: TextView
     private lateinit var logScrollView: ScrollView
     private lateinit var btnCopyLogs: TextView
@@ -51,9 +57,21 @@ class MainActivity : AppCompatActivity() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
+                TunnelService.ACTION_HA_STATE -> {
+                    val stateName = intent.getStringExtra(TunnelService.EXTRA_HA_STATE) ?: TunnelService.HAState.STOPPED.name
+                    val message = intent.getStringExtra(TunnelService.EXTRA_HA_MESSAGE) ?: ""
+                    val state = try {
+                        TunnelService.HAState.valueOf(stateName)
+                    } catch (_: Exception) {
+                        TunnelService.HAState.STOPPED
+                    }
+                    updateStatusUI(state, message)
+                }
                 TunnelService.ACTION_STATUS -> {
                     val isRunning = intent.getBooleanExtra(TunnelService.EXTRA_IS_RUNNING, false)
-                    updateUI(isRunning)
+                    if (!isRunning) {
+                        updateStatusUI(TunnelService.HAState.STOPPED, "Túnel Parado")
+                    }
                 }
                 TunnelService.ACTION_LOG -> {
                     val line = intent.getStringExtra(TunnelService.EXTRA_LOG_MESSAGE) ?: return
@@ -75,14 +93,19 @@ class MainActivity : AppCompatActivity() {
         switchBoot = findViewById(R.id.switchBoot)
         btnToggleTunnel = findViewById(R.id.btnToggleTunnel)
         btnOpenHA = findViewById(R.id.btnOpenHA)
-        tvStatus = findViewById(R.id.tvStatus)
+        badgeStatus = findViewById(R.id.badgeStatus)
         viewStatusDot = findViewById(R.id.viewStatusDot)
+        tvStatusTitle = findViewById(R.id.tvStatusTitle)
+        tvStatusSubtitle = findViewById(R.id.tvStatusSubtitle)
+        progressBarConnecting = findViewById(R.id.progressBarConnecting)
+        tvLocalAddr = findViewById(R.id.tvLocalAddr)
+        tvConnectedHA = findViewById(R.id.tvConnectedHA)
         tvLogs = findViewById(R.id.tvLogs)
         logScrollView = findViewById(R.id.logScrollView)
         btnCopyLogs = findViewById(R.id.btnCopyLogs)
         btnClearLogs = findViewById(R.id.btnClearLogs)
 
-        // 100% LIMPO: Nada hardcoded. Carrega vazio ou o que o usuário salvou anteriormente
+        // 100% LIMPO: Zero valores hardcoded
         etPeerId.setText(prefs.getString("peer_id", ""))
         etPsk.setText(prefs.getString("psk", ""))
         switchBoot.isChecked = prefs.getBoolean("auto_start", false)
@@ -132,7 +155,7 @@ class MainActivity : AppCompatActivity() {
 
         loadExistingLogs()
         requestNotificationPermission()
-        updateUI(TunnelService.isRunning)
+        updateStatusUI(TunnelService.haState, TunnelService.haMessage)
     }
 
     private fun handleScannedQr(scanned: String) {
@@ -206,7 +229,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             startService(intent)
         }
-        updateUI(true)
+        updateStatusUI(TunnelService.HAState.SEARCHING, "Iniciando túnel e buscando Home Assistant...")
     }
 
     private fun stopTunnel() {
@@ -215,22 +238,74 @@ class MainActivity : AppCompatActivity() {
             action = TunnelService.ACTION_STOP
         }
         startService(intent)
-        updateUI(false)
+        updateStatusUI(TunnelService.HAState.STOPPED, "Túnel Parado")
     }
 
-    private fun updateUI(isRunning: Boolean) {
-        if (isRunning) {
-            tvStatus.text = "Túnel Conectado (127.0.0.1:8123)"
-            tvStatus.setTextColor(ContextCompat.getColor(this, R.color.status_green))
-            viewStatusDot.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_green)
-            btnToggleTunnel.text = "PARAR TÚNEL P2P"
-            btnToggleTunnel.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_red)
-        } else {
-            tvStatus.text = "Túnel Parado"
-            tvStatus.setTextColor(ContextCompat.getColor(this, R.color.text_main))
-            viewStatusDot.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_red)
-            btnToggleTunnel.text = "INICIAR TÚNEL P2P"
-            btnToggleTunnel.backgroundTintList = ContextCompat.getColorStateList(this, R.color.primary)
+    private fun updateStatusUI(state: TunnelService.HAState, message: String) {
+        when (state) {
+            TunnelService.HAState.STOPPED -> {
+                badgeStatus.text = "DESCONECTADO"
+                badgeStatus.backgroundTintList = ContextCompat.getColorStateList(this, R.color.badge_stopped_bg)
+                badgeStatus.setTextColor(ContextCompat.getColor(this, R.color.badge_stopped_text))
+
+                viewStatusDot.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_red)
+                tvStatusTitle.text = "Túnel Parado"
+                tvStatusTitle.setTextColor(ContextCompat.getColor(this, R.color.text_main))
+                tvStatusSubtitle.text = "Inicie o túnel para conectar ao Home Assistant"
+
+                progressBarConnecting.visibility = View.GONE
+                tvConnectedHA.text = "Desconectado"
+                tvConnectedHA.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+
+                btnToggleTunnel.text = "INICIAR TÚNEL P2P"
+                btnToggleTunnel.backgroundTintList = ContextCompat.getColorStateList(this, R.color.primary)
+
+                btnOpenHA.isEnabled = false
+                btnOpenHA.alpha = 0.5f
+                btnOpenHA.backgroundTintList = ContextCompat.getColorStateList(this, R.color.card_bg)
+            }
+            TunnelService.HAState.SEARCHING -> {
+                badgeStatus.text = "BUSCANDO NÓ"
+                badgeStatus.backgroundTintList = ContextCompat.getColorStateList(this, R.color.badge_searching_bg)
+                badgeStatus.setTextColor(ContextCompat.getColor(this, R.color.badge_searching_text))
+
+                viewStatusDot.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_yellow)
+                tvStatusTitle.text = "Buscando Home Assistant..."
+                tvStatusTitle.setTextColor(ContextCompat.getColor(this, R.color.status_yellow))
+                tvStatusSubtitle.text = "Localizando nó na rede P2P DHT (IPv6/QUIC)..."
+
+                progressBarConnecting.visibility = View.VISIBLE
+                tvConnectedHA.text = "Buscando na rede DHT..."
+                tvConnectedHA.setTextColor(ContextCompat.getColor(this, R.color.status_yellow))
+
+                btnToggleTunnel.text = "PARAR TÚNEL P2P"
+                btnToggleTunnel.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_red)
+
+                btnOpenHA.isEnabled = true
+                btnOpenHA.alpha = 0.8f
+                btnOpenHA.backgroundTintList = ContextCompat.getColorStateList(this, R.color.primary)
+            }
+            TunnelService.HAState.CONNECTED -> {
+                badgeStatus.text = "ONLINE"
+                badgeStatus.backgroundTintList = ContextCompat.getColorStateList(this, R.color.badge_connected_bg)
+                badgeStatus.setTextColor(ContextCompat.getColor(this, R.color.badge_connected_text))
+
+                viewStatusDot.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_green)
+                tvStatusTitle.text = "Home Assistant Conectado!"
+                tvStatusTitle.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+                tvStatusSubtitle.text = "Túnel P2P direto ativo e criptografado"
+
+                progressBarConnecting.visibility = View.GONE
+                tvConnectedHA.text = "Conectado via IPv6/QUIC"
+                tvConnectedHA.setTextColor(ContextCompat.getColor(this, R.color.status_green))
+
+                btnToggleTunnel.text = "PARAR TÚNEL P2P"
+                btnToggleTunnel.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_red)
+
+                btnOpenHA.isEnabled = true
+                btnOpenHA.alpha = 1.0f
+                btnOpenHA.backgroundTintList = ContextCompat.getColorStateList(this, R.color.status_green)
+            }
         }
     }
 
@@ -246,6 +321,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         val filter = IntentFilter().apply {
             addAction(TunnelService.ACTION_STATUS)
+            addAction(TunnelService.ACTION_HA_STATE)
             addAction(TunnelService.ACTION_LOG)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -253,7 +329,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(receiver, filter)
         }
-        updateUI(TunnelService.isRunning)
+        updateStatusUI(TunnelService.haState, TunnelService.haMessage)
     }
 
     override fun onPause() {

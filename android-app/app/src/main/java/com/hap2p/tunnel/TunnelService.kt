@@ -21,6 +21,12 @@ import java.util.Locale
 
 class TunnelService : Service() {
 
+    enum class HAState {
+        STOPPED,
+        SEARCHING,
+        CONNECTED
+    }
+
     private var tunnelProcess: Process? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -32,13 +38,22 @@ class TunnelService : Service() {
         const val ACTION_START = "com.hap2p.tunnel.START"
         const val ACTION_STOP = "com.hap2p.tunnel.STOP"
         const val ACTION_STATUS = "com.hap2p.tunnel.STATUS_UPDATE"
+        const val ACTION_HA_STATE = "com.hap2p.tunnel.HA_STATE_UPDATE"
         const val ACTION_LOG = "com.hap2p.tunnel.LOG_EVENT"
         const val EXTRA_IS_RUNNING = "is_running"
+        const val EXTRA_HA_STATE = "ha_state"
+        const val EXTRA_HA_MESSAGE = "ha_message"
         const val EXTRA_PEER_ID = "peer_id"
         const val EXTRA_PSK = "psk"
         const val EXTRA_LOG_MESSAGE = "log_message"
 
         var isRunning = false
+            private set
+
+        var haState: HAState = HAState.STOPPED
+            private set
+
+        var haMessage: String = "Túnel Parado"
             private set
 
         val logHistory = mutableListOf<String>()
@@ -106,7 +121,7 @@ class TunnelService : Service() {
         wakeLock?.acquire(24 * 60 * 60 * 1000L) // 24 horas
         wifiLock?.acquire()
 
-        val notification = buildNotification("Conectando ao Home Assistant...")
+        val notification = buildNotification("Buscando Home Assistant na rede P2P...")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
@@ -145,13 +160,34 @@ class TunnelService : Service() {
                 processBuilder.redirectErrorStream(true)
                 tunnelProcess = processBuilder.start()
                 isRunning = true
-                broadcastStatus(true)
+                haState = HAState.SEARCHING
+                haMessage = "Buscando Home Assistant na rede P2P..."
 
-                updateNotification("Túnel P2P Ativo (127.0.0.1:8123)")
+                broadcastStatus(true)
+                broadcastHAState()
+                updateNotification("Buscando Home Assistant...")
 
                 val reader = tunnelProcess?.inputStream?.bufferedReader()
                 reader?.forEachLine { line ->
                     addLog(line, this@TunnelService)
+
+                    // Analisa estado de conexão com o Home Assistant em tempo real
+                    if (line.contains("[HA_STATE:CONNECTED]") ||
+                        line.contains("Conectado diretamente ao Home Assistant") ||
+                        line.contains("Conectado ao Home Assistant via Discovery")
+                    ) {
+                        haState = HAState.CONNECTED
+                        haMessage = "Home Assistant Conectado!"
+                        broadcastHAState()
+                        updateNotification("Home Assistant Conectado (127.0.0.1:8123)")
+                    } else if (line.contains("[HA_STATE:SEARCHING]") ||
+                        line.contains("Conexão com Home Assistant perdida")
+                    ) {
+                        haState = HAState.SEARCHING
+                        haMessage = "Buscando Home Assistant na rede P2P..."
+                        broadcastHAState()
+                        updateNotification("Buscando Home Assistant...")
+                    }
                 }
 
                 val exitCode = tunnelProcess?.waitFor() ?: -1
@@ -167,6 +203,9 @@ class TunnelService : Service() {
 
     private fun stopTunnel() {
         isRunning = false
+        haState = HAState.STOPPED
+        haMessage = "Túnel Parado"
+
         try {
             tunnelProcess?.destroy()
             tunnelProcess = null
@@ -176,12 +215,22 @@ class TunnelService : Service() {
         if (wifiLock?.isHeld == true) wifiLock?.release()
 
         broadcastStatus(false)
+        broadcastHAState()
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     private fun broadcastStatus(running: Boolean) {
         val intent = Intent(ACTION_STATUS).apply {
             putExtra(EXTRA_IS_RUNNING, running)
+            setPackage(packageName)
+        }
+        sendBroadcast(intent)
+    }
+
+    private fun broadcastHAState() {
+        val intent = Intent(ACTION_HA_STATE).apply {
+            putExtra(EXTRA_HA_STATE, haState.name)
+            putExtra(EXTRA_HA_MESSAGE, haMessage)
             setPackage(packageName)
         }
         sendBroadcast(intent)
