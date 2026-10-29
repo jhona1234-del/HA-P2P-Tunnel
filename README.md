@@ -88,5 +88,5 @@ Clique no botão abaixo para adicionar este repositório diretamente ao seu Home
 
 ## 👨‍💻 Autor
 
-Criado por **Jho** ([@jhona1234-del](https://github.com/jhona1234-del))  
+Criado por **Jhona1234** ([@jhona1234-del](https://github.com/jhona1234-del))  
 Licenciado sob a [Licença MIT](LICENSE).
