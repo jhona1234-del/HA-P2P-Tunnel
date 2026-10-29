@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,20 +21,21 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/pnet"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	"github.com/libp2p/go-libp2p/p2p/discovery/util"
 	qrcode "github.com/skip2/go-qrcode"
 )
 
 const (
-	ProtocolID   = "/ha-p2p-tunnel/1.0.0"
-	AppVersion   = "0.1.0"
-	AppDeveloper = "Jho"
+	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
+	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
+	AppVersion       = "0.2.0"
+	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 )
 
 type ConnectionEvent struct {
@@ -47,34 +49,54 @@ type ConnectionEvent struct {
 	Active    bool      `json:"active"`
 }
 
+type ClientReport struct {
+	PeerID            string    `json:"peer_id"`
+	Device            string    `json:"device"`
+	ConnectedAt       string    `json:"connected_at"`
+	ConnectDurationMs int64     `json:"connect_duration_ms"`
+	UsedCache         bool      `json:"used_cache"`
+	Logs              []string  `json:"logs"`
+	ReceivedAt        time.Time `json:"received_at"`
+}
+
 type TunnelStats struct {
-	mu            sync.Mutex
-	ActiveStreams int64
-	TotalStreams  int64
-	History       []*ConnectionEvent
-	StartedAt     time.Time
+	mu              sync.Mutex
+	ActiveStreams   int64
+	TotalStreams    int64
+	RejectedStreams int64
+	TotalBytesIn    int64
+	TotalBytesOut   int64
+	History         []*ConnectionEvent
+	ClientReports   []*ClientReport
+	StartedAt       time.Time
 }
 
 var stats = &TunnelStats{
-	StartedAt: time.Now(),
-	History:   make([]*ConnectionEvent, 0),
+	StartedAt:     time.Now(),
+	History:       make([]*ConnectionEvent, 0),
+	ClientReports: make([]*ClientReport, 0),
 }
 
 func (s *TunnelStats) addEvent(e *ConnectionEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.History = append([]*ConnectionEvent{e}, s.History...)
-	if len(s.History) > 30 {
-		s.History = s.History[:30]
+	if len(s.History) > 40 {
+		s.History = s.History[:40]
 	}
 }
 
-func derivePSK(secret string) pnet.PSK {
-	if secret == "" {
-		return nil
+func (s *TunnelStats) addClientReport(r *ClientReport) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ClientReports = append([]*ClientReport{r}, s.ClientReports...)
+	if len(s.ClientReports) > 10 {
+		s.ClientReports = s.ClientReports[:10]
 	}
-	h := sha256.Sum256([]byte("ha-p2p-psk-v1:" + secret))
-	return h[:]
+}
+
+func computePSKToken(secret string) [32]byte {
+	return sha256.Sum256([]byte("ha-p2p-psk-auth-v2:" + secret))
 }
 
 func readOptionsPSK() string {
@@ -118,7 +140,6 @@ func (cw *countingWriter) Write(p []byte) (n int, err error) {
 func getLocalLANIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err == nil {
-		// Prioridade 1: Rede local padrão (192.168.x.x ou 10.x.x.x)
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 				if ip4 := ipnet.IP.To4(); ip4 != nil {
@@ -129,7 +150,6 @@ func getLocalLANIP() string {
 				}
 			}
 		}
-		// Prioridade 2: Qualquer IPv4 que não seja bridge Docker (172.17 / 172.30)
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 				if ip4 := ipnet.IP.To4(); ip4 != nil {
@@ -149,7 +169,6 @@ func startIngressServer(port string, hostID string, secretPSK string) {
 	pskEnabled := secretPSK != ""
 	lanIP := getLocalLANIP()
 
-	// Handler flexível para servir o arquivo APK
 	apkHandler := func(w http.ResponseWriter, r *http.Request) {
 		apkPaths := []string{
 			"/app/ha-p2p-tunnel.apk",
@@ -177,7 +196,6 @@ func startIngressServer(port string, hostID string, secretPSK string) {
 	mux.HandleFunc("/ha-p2p-tunnel.apk", apkHandler)
 	mux.HandleFunc("/HA_P2P_Tunnel.apk", apkHandler)
 
-	// QR Code para baixar o APK no celular usando o IP real da LAN
 	mux.HandleFunc("/qr-apk.png", func(w http.ResponseWriter, r *http.Request) {
 		downloadUrl := fmt.Sprintf("http://%s:8099/download/ha-p2p-tunnel.apk", lanIP)
 		png, err := qrcode.Encode(downloadUrl, qrcode.Medium, 260)
@@ -190,7 +208,6 @@ func startIngressServer(port string, hostID string, secretPSK string) {
 		w.Write(png)
 	})
 
-	// QR Code para conectar o PeerID (com ou sem PSK)
 	mux.HandleFunc("/qr-peer.png", func(w http.ResponseWriter, r *http.Request) {
 		qrContent := hostID
 		if pskEnabled {
@@ -206,23 +223,25 @@ func startIngressServer(port string, hostID string, secretPSK string) {
 		w.Write(png)
 	})
 
-	// API de estatísticas ao vivo
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		stats.mu.Lock()
 		defer stats.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"active_streams": atomic.LoadInt64(&stats.ActiveStreams),
-			"total_streams":  atomic.LoadInt64(&stats.TotalStreams),
-			"uptime":         time.Since(stats.StartedAt).Round(time.Second).String(),
-			"history":        stats.History,
+			"active_streams":   atomic.LoadInt64(&stats.ActiveStreams),
+			"total_streams":    atomic.LoadInt64(&stats.TotalStreams),
+			"rejected_streams": atomic.LoadInt64(&stats.RejectedStreams),
+			"total_bytes_in":   atomic.LoadInt64(&stats.TotalBytesIn),
+			"total_bytes_out":  atomic.LoadInt64(&stats.TotalBytesOut),
+			"uptime":           time.Since(stats.StartedAt).Round(time.Second).String(),
+			"history":          stats.History,
+			"client_reports":   stats.ClientReports,
 		})
 	})
 
-	// Página Web Ingress / Painel de Controle
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		pskBadge := `<span class="badge badge-off">Desativada</span>`
+		pskBadge := `<span class="badge badge-off">Desativada (Livre)</span>`
 		if pskEnabled {
 			pskBadge = `<span class="badge badge-on">Ativada (Protegida)</span>`
 		}
@@ -238,7 +257,7 @@ func startIngressServer(port string, hostID string, secretPSK string) {
   :root { --bg: #0b1120; --card: #1e293b; --text: #f8fafc; --primary: #38bdf8; --success: #22c55e; --border: #334155; }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
-  .container { max-width: 920px; margin: 0 auto; }
+  .container { max-width: 960px; margin: 0 auto; }
   .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
   .title { font-size: 22px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 10px; }
   .dev-tag { font-size: 13px; color: #94a3b8; font-weight: normal; margin-left: 8px; }
@@ -258,9 +277,10 @@ func startIngressServer(port string, hostID string, secretPSK string) {
   .link-direct { margin-top: 10px; font-size: 12px; color: #94a3b8; word-break: break-all; }
   .link-direct a { color: #38bdf8; text-decoration: underline; }
   .peer-id-box { background: #0b1120; padding: 10px; border-radius: 8px; border: 1px solid var(--border); word-break: break-all; font-family: monospace; font-size: 12px; color: #38bdf8; margin-bottom: 10px; width: 100%%%%; }
-  .stat-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
-  .stat-row:last-child { border-bottom: none; }
-  .stat-value { font-weight: 700; color: #fff; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .stat-card { background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 14px; text-align: center; }
+  .stat-card .val { font-size: 20px; font-weight: 700; color: #fff; margin-top: 6px; }
+  .stat-card .lbl { font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; }
   .badge { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
   .badge-on { background: #15803d; color: #dcfce7; }
   .badge-off { background: #475569; color: #f1f5f9; }
@@ -270,6 +290,7 @@ func startIngressServer(port string, hostID string, secretPSK string) {
   td { padding: 10px; border-bottom: 1px solid #1e293b; color: #e2e8f0; }
   tr:last-child td { border-bottom: none; }
   .live-tag { color: var(--success); font-weight: 700; animation: blink 1.5s infinite; }
+  .diag-box { background: #0a0f1d; border: 1px solid #1e293b; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 11px; color: #38bdf8; max-height: 160px; overflow-y: auto; white-space: pre-wrap; margin-top: 10px; }
   @keyframes blink { 0%%%%,100%%%% { opacity: 1; } 50%%%% { opacity: 0.4; } }
 </style>
 </head>
@@ -306,15 +327,22 @@ func startIngressServer(port string, hostID string, secretPSK string) {
     </div>
   </div>
 
-  <!-- Status Card -->
+  <!-- Métricas do Túnel -->
   <div class="card">
-    <h2>Status da Conexão P2P</h2>
-    <div class="stat-row"><span>Estado</span><span class="stat-value" style="color:var(--success)">● Escutando Conexões P2P</span></div>
-    <div class="stat-row"><span>Streams Ativos Agora</span><span class="stat-value" id="activeStreams">0</span></div>
-    <div class="stat-row"><span>Total de Conexões</span><span class="stat-value" id="totalStreams">0</span></div>
-    <div class="stat-row"><span>Tempo em Execução</span><span class="stat-value" id="uptime">0s</span></div>
-    <div class="stat-row"><span>IPv4 + IPv6</span><span class="stat-value" style="color:var(--success)">QUIC e TCP Habilitados</span></div>
-    <div class="stat-row"><span>Hole Punching / UPnP</span><span class="stat-value" style="color:var(--success)">Ativo</span></div>
+    <h2>Métricas em Tempo Real</h2>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="lbl">Streams Ativos</div><div class="val" id="activeStreams" style="color:var(--success)">0</div></div>
+      <div class="stat-card"><div class="lbl">Total Conexões</div><div class="val" id="totalStreams">0</div></div>
+      <div class="stat-card"><div class="lbl">Tráfego Enviado</div><div class="val" id="totalBytesOut">0 KB</div></div>
+      <div class="stat-card"><div class="lbl">Tráfego Recebido</div><div class="val" id="totalBytesIn">0 KB</div></div>
+      <div class="stat-card"><div class="lbl">Uptime</div><div class="val" id="uptime">0s</div></div>
+    </div>
+  </div>
+
+  <!-- Diagnóstico do App Cliente -->
+  <div class="table-box" id="diagBoxContainer" style="display:none;">
+    <h2 style="margin-top:0; color:#38bdf8; font-size:15px;">📱 Relatório de Diagnóstico do Celular (Última Conexão)</h2>
+    <div id="diagContent"></div>
   </div>
 
   <!-- Registro de Conexões Recentes -->
@@ -343,7 +371,7 @@ function copyPeer() {
   const text = document.getElementById("peerText").innerText.trim();
   const btn = document.getElementById("btnCopyPeer");
   function onSuccess() {
-    btn.innerText = "✓ Copiado!";
+    btn.innerText = "✓ Copiado com Sucesso!";
     btn.style.background = "#16a34a";
     setTimeout(() => {
       btn.innerText = " Copiar Peer ID";
@@ -351,31 +379,30 @@ function copyPeer() {
     }, 2500);
   }
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(onSuccess).catch(() => fallbackCopy(text, onSuccess));
+    navigator.clipboard.writeText(text).then(onSuccess).catch(fallback);
   } else {
-    fallbackCopy(text, onSuccess);
+    fallback();
+  }
+  function fallback() {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      onSuccess();
+    } catch(e) {}
+    document.body.removeChild(ta);
   }
 }
 
-function fallbackCopy(text, cb) {
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.style.position = "fixed";
-  ta.style.left = "-9999px";
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  try {
-    const ok = document.execCommand("copy");
-    if (ok) {
-      cb();
-    } else {
-      prompt("Copie seu PeerID:", text);
-    }
-  } catch (e) {
-    prompt("Copie seu PeerID:", text);
-  }
-  document.body.removeChild(ta);
+function formatBytes(bytes) {
+  if (bytes === 0) return "0 KB";
+  const kb = bytes / 1024;
+  if (kb < 1024) return kb.toFixed(1) + " KB";
+  return (kb / 1024).toFixed(2) + " MB";
 }
 
 function updateStats() {
@@ -385,18 +412,48 @@ function updateStats() {
       document.getElementById("activeStreams").innerText = data.active_streams;
       document.getElementById("totalStreams").innerText = data.total_streams;
       document.getElementById("uptime").innerText = data.uptime;
-      
-      const tbody = document.getElementById("historyBody");
-      if (data.history && data.history.length > 0) {
-        tbody.innerHTML = data.history.map(ev => {
-          const status = ev.active ? '<span class="live-tag">● Conectado</span>' : '<span style="color:#64748b">Encerrado</span>';
-          const totalBytes = ((ev.bytes_in + ev.bytes_out) / 1024).toFixed(1) + " KB";
-          const shortPeer = ev.peer_id.length > 18 ? ev.peer_id.slice(0, 10) + "..." + ev.peer_id.slice(-6) : ev.peer_id;
-          const timeStr = new Date(ev.start_time).toLocaleTimeString();
-          return "<tr><td>" + status + "</td><td title='" + ev.peer_id + "'><code>" + shortPeer + "</code></td><td><code>" + ev.remote + "</code></td><td>" + timeStr + "</td><td>" + ev.duration + "</td><td>" + totalBytes + "</td></tr>";
-        }).join("");
+      if (data.total_bytes_out) document.getElementById("totalBytesOut").innerText = formatBytes(data.total_bytes_out);
+      if (data.total_bytes_in) document.getElementById("totalBytesIn").innerText = formatBytes(data.total_bytes_in);
+
+      // Diagnóstico dos logs do cliente
+      if (data.client_reports && data.client_reports.length > 0) {
+        const r = data.client_reports[0];
+        document.getElementById("diagBoxContainer").style.display = "block";
+        document.getElementById("diagContent").innerHTML = `
+          <div style="font-size:13px; color:#cbd5e1; margin-bottom:8px;">
+            <b>Dispositivo:</b> ${r.device} &nbsp;|&nbsp; 
+            <b>Tempo de busca:</b> ${r.connect_duration_ms}ms &nbsp;|&nbsp; 
+            <b>Usou Cache:</b> ${r.used_cache ? '<span style="color:#22c55e">Sim (Instantâneo)</span>' : 'Não (Varredura DHT)'} &nbsp;|&nbsp; 
+            <b>Recebido em:</b> ${new Date(r.received_at).toLocaleTimeString()}
+          </div>
+          <div class="diag-box">${r.logs ? r.logs.join("\n") : "Sem logs detalhados."}</div>
+        `;
       }
-    }).catch(console.error);
+
+      if (data.history && data.history.length > 0) {
+        let html = "";
+        data.history.forEach(h => {
+          const statusTag = h.active 
+            ? '<span class="live-tag">● Conectado</span>' 
+            : '<span style="color:#64748b">Encerrado</span>';
+          const dur = h.active ? '-' : (h.duration || '-');
+          const traf = formatBytes((h.bytes_in || 0) + (h.bytes_out || 0));
+          const peerShort = h.peer_id.slice(0, 10) + "..." + h.peer_id.slice(-6);
+          const isV6 = h.remote.includes("/ip6/");
+          const ipBadge = isV6 ? '<span style="background:#581c87; color:#e9d5ff; padding:2px 6px; border-radius:4px; font-size:10px; margin-right:4px;">IPv6</span>' : '<span style="background:#1e3a8a; color:#bfdbfe; padding:2px 6px; border-radius:4px; font-size:10px; margin-right:4px;">IPv4</span>';
+
+          html += `<tr>
+            <td>${statusTag}</td>
+            <td style="font-family:monospace;" title="${h.peer_id}">${peerShort}</td>
+            <td style="font-size:11px;">${ipBadge}${h.remote}</td>
+            <td>${new Date(h.start_time).toLocaleTimeString()}</td>
+            <td>${dur}</td>
+            <td>${traf}</td>
+          </tr>`;
+        });
+        document.getElementById("historyBody").innerHTML = html;
+      }
+    }).catch(() => {});
 }
 setInterval(updateStats, 2000);
 updateStats();
@@ -431,6 +488,8 @@ func main() {
 	}
 
 	secretPSK := readOptionsPSK()
+	pskEnabled := secretPSK != ""
+
 	var opts []libp2p.Option
 	opts = append(opts,
 		libp2p.Identity(priv),
@@ -446,12 +505,9 @@ func main() {
 		libp2p.EnableAutoRelayWithStaticRelays(dht.GetDefaultBootstrapPeerAddrInfos()),
 	)
 
-	pskEnabled := false
-	if secretPSK != "" {
-		psk := derivePSK(secretPSK)
-		opts = append(opts, libp2p.PrivateNetwork(psk))
-		pskEnabled = true
-	}
+	// NOTA DE ARQUITETURA: Não usamos libp2p.PrivateNetwork(psk) pois ela bloqueia
+	// a conexão com os nós públicos de bootstrap da DHT. A autenticação por PSK é feita
+	// de forma segura no nível de Stream da conexão, mantendo a descoberta 100% funcional!
 
 	host, err := libp2p.New(opts...)
 	if err != nil {
@@ -461,10 +517,8 @@ func main() {
 
 	peerIDStr := host.ID().String()
 
-	// Inicia painel Web Ingress na porta 8099
 	startIngressServer(*ingressPort, peerIDStr, secretPSK)
 
-	// Conecta na DHT global
 	kademliaDHT, err := dht.New(host, dht.Mode(dht.ModeServer))
 	if err != nil {
 		log.Fatalf("[ERRO FATAL] Falha na DHT: %v", err)
@@ -486,26 +540,42 @@ func main() {
 		}
 	}()
 
-	fmt.Println("==========================================================================")
-	fmt.Printf("        HA P2P TUNNEL v%s (Beta) - Desenvolvido por %s        \n", AppVersion, AppDeveloper)
-	fmt.Println("==========================================================================")
-	fmt.Printf(" Data/Hora de Início: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Printf(" PEER ID DO SEU HOME ASSISTANT:\n   >>> %s <<<\n", peerIDStr)
-	fmt.Printf(" Painel Web / Ingress: Ativo na porta %s (Acesse pelo Home Assistant)\n", *ingressPort)
-	if pskEnabled {
-		fmt.Println(" Rede Privada (PSK): [ATIVADA] - Somente clientes com sua chave conectam.")
-	} else {
-		fmt.Println(" Rede Privada (PSK): [DESATIVADA] - Qualquer cliente com seu PeerID pode conectar.")
-	}
-	fmt.Println(" Protocolos: IPv4 + IPv6 | QUIC + TCP | UPnP NAT-PMP Ativo")
-	fmt.Println("==========================================================================")
+	// Handler do Stream de Controle / Relatórios de Diagnóstico do Cliente
+	host.SetStreamHandler(ProtocolIDReport, func(s network.Stream) {
+		defer s.Close()
+		s.SetReadDeadline(time.Now().Add(10 * time.Second))
+		var report ClientReport
+		if err := json.NewDecoder(s).Decode(&report); err == nil {
+			report.ReceivedAt = time.Now()
+			stats.addClientReport(&report)
+			log.Printf("[+] [DIAGNÓSTICO] Relatório de conexão recebido do cliente %s (Dispositivo: %s)", report.PeerID, report.Device)
+		}
+	})
 
-	// Stream handler
+	// Handler principal de tráfego do Túnel P2P para o Home Assistant
 	host.SetStreamHandler(ProtocolID, func(s network.Stream) {
 		defer s.Close()
 
 		remotePeer := s.Conn().RemotePeer().String()
 		remoteAddr := s.Conn().RemoteMultiaddr().String()
+
+		// 1. Verificação de Chave PSK (no nível de Stream)
+		if pskEnabled {
+			s.SetReadDeadline(time.Now().Add(5 * time.Second))
+			tokenBuf := make([]byte, 32)
+			_, err := io.ReadFull(s, tokenBuf)
+			s.SetReadDeadline(time.Time{})
+
+			expected := computePSKToken(secretPSK)
+			if err != nil || subtle.ConstantTimeCompare(tokenBuf, expected[:]) != 1 {
+				log.Printf("[SEGURANÇA] Tentativa de conexão REJEITADA de %s: Chave PSK incorreta ou ausente!", remotePeer)
+				atomic.AddInt64(&stats.RejectedStreams, 1)
+				_, _ = s.Write([]byte{0x00}) // Rejeitado
+				return
+			}
+			_, _ = s.Write([]byte{0x01}) // Aprovado
+		}
+
 		activeNow := atomic.AddInt64(&stats.ActiveStreams, 1)
 		atomic.AddInt64(&stats.TotalStreams, 1)
 
@@ -518,12 +588,12 @@ func main() {
 		}
 		stats.addEvent(event)
 
-		log.Printf("[+] [NOVA CONEXÃO P2P] Cliente conectado!")
+		log.Printf("[+] [NOVA CONEXÃO P2P] Cliente autenticado e conectado!")
 		log.Printf("    PeerID: %s", remotePeer)
 		log.Printf("    Origem: %s", remoteAddr)
-		log.Printf("    Streams Ativos no Momento: %d", activeNow)
+		log.Printf("    Streams Ativos: %d", activeNow)
 
-		haConn, err := net.Dial("tcp", "127.0.0.1:8123")
+		haConn, err := net.DialTimeout("tcp", "127.0.0.1:8123", 5*time.Second)
 		if err != nil {
 			log.Printf("[-] [ERRO] Falha ao encaminhar para Home Assistant local: %v", err)
 			atomic.AddInt64(&stats.ActiveStreams, -1)
@@ -552,6 +622,8 @@ func main() {
 
 		duration := time.Since(startTime).Round(time.Millisecond)
 		remaining := atomic.AddInt64(&stats.ActiveStreams, -1)
+		atomic.AddInt64(&stats.TotalBytesIn, bytesIn)
+		atomic.AddInt64(&stats.TotalBytesOut, bytesOut)
 
 		event.Active = false
 		event.EndTime = time.Now()
@@ -561,10 +633,23 @@ func main() {
 
 		log.Printf("[-] [CONEXÃO ENCERRADA] Cliente desconectado.")
 		log.Printf("    PeerID: %s", remotePeer)
-		log.Printf("    Duração: %v | Enviados ao HA: %.2f KB | Recebidos do HA: %.2f KB",
-			duration, float64(bytesIn)/1024, float64(bytesOut)/1024)
+		log.Printf("    Duração: %v | Trafegado: %.2f KB", duration, float64(bytesIn+bytesOut)/1024)
 		log.Printf("    Streams Ativos Restantes: %d", remaining)
 	})
+
+	fmt.Println("==========================================================================")
+	fmt.Printf("        HA P2P TUNNEL v%s (Beta) - Desenvolvido por %s        \n", AppVersion, AppDeveloper)
+	fmt.Println("==========================================================================")
+	fmt.Printf(" Data/Hora de Início: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Printf(" PEER ID DO SEU HOME ASSISTANT:\n   >>> %s <<<\n", peerIDStr)
+	fmt.Printf(" Painel Web / Ingress: Ativo na porta %s (Acesse pelo Home Assistant)\n", *ingressPort)
+	if pskEnabled {
+		fmt.Println(" Rede Privada (PSK): [ATIVADA] - Autenticação por Stream ativa.")
+	} else {
+		fmt.Println(" Rede Privada (PSK): [DESATIVADA] - Qualquer cliente com seu PeerID pode conectar.")
+	}
+	fmt.Println(" Protocolos: IPv4 + IPv6 | QUIC + TCP | UPnP NAT-PMP Ativo")
+	fmt.Println("==========================================================================")
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)

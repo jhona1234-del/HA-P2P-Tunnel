@@ -1,14 +1,14 @@
 name: "HA P2P Tunnel"
 description: "Túnel P2P direto para o APK com painel Ingress, QR Code e download do APK"
-version: "0.1.0"
+version: "0.2.0"
 slug: "ha_p2p_tunnel"
 init: false
 arch:
   - aarch64
   - armv7
   - amd64
-url: "https://github.com/jho/ha_p2p_tunnel"
-maintainer: "Jho"
+url: "https://github.com/jhona1234-del/HA_P2P_Tunnel"
+maintainer: "Jhonatan Garcia (jhona1234)"
 host_network: true
 ingress: true
 ingress_port: 8099

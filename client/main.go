@@ -11,29 +11,29 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	ipfslog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/pnet"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	"github.com/multiformats/go-multiaddr"
 )
 
-const ProtocolID = protocol.ID("/ha-p2p-tunnel/1.0.0")
+const (
+	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
+	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
+)
 
-func derivePSK(secret string) pnet.PSK {
-	if secret == "" {
-		return nil
-	}
-	h := sha256.Sum256([]byte("ha-p2p-psk-v1:" + secret))
-	return h[:]
+func computePSKToken(secret string) [32]byte {
+	return sha256.Sum256([]byte("ha-p2p-psk-auth-v2:" + secret))
 }
 
 func loadOrCreateIdentity(cacheDir string) (crypto.PrivKey, error) {
@@ -94,8 +94,43 @@ func saveCachedAddrs(cacheDir string, addrs []multiaddr.Multiaddr) {
 	}
 }
 
+func sendReport(h host.Host, targetPeerID peer.ID, cacheDir string, usedCache bool, durationMs int64) {
+	if cacheDir == "" {
+		return
+	}
+	reportFile := filepath.Join(cacheDir, "recent_logs.txt")
+	var logs []string
+	if data, err := os.ReadFile(reportFile); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, l := range lines {
+			if strings.TrimSpace(l) != "" {
+				logs = append(logs, l)
+			}
+		}
+	}
+
+	report := map[string]interface{}{
+		"peer_id":             h.ID().String(),
+		"device":              "Android",
+		"connected_at":        time.Now().Format("2006-01-02 15:04:05"),
+		"connect_duration_ms": durationMs,
+		"used_cache":          usedCache,
+		"logs":                logs,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	s, err := h.NewStream(ctx, targetPeerID, ProtocolIDReport)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+	_ = json.NewEncoder(s).Encode(report)
+}
+
 func main() {
-	// Silencia mensagens de erro do netlink no Android (permissão de SELinux)
+	// Silencia mensagens de erro de rota do netlink no Android (SELinux)
 	_ = ipfslog.SetLogLevel("basichost", "fatal")
 	_ = ipfslog.SetLogLevel("autonat", "fatal")
 
@@ -116,7 +151,6 @@ func main() {
 
 	ctx := context.Background()
 
-	// Carrega ou cria identidade persistente (mantém o mesmo PeerID e acelera roteamento)
 	var privKey crypto.PrivKey
 	if *cacheDir != "" {
 		_ = os.MkdirAll(*cacheDir, 0755)
@@ -140,9 +174,7 @@ func main() {
 	}
 
 	if *pskStr != "" {
-		psk := derivePSK(*pskStr)
-		opts = append(opts, libp2p.PrivateNetwork(psk))
-		log.Println("[P2P] Chave de Rede Privada (PSK) ativada.")
+		log.Println("[P2P] Chave de Proteção (PSK) configurada para autenticação de Stream.")
 	}
 
 	host, err := libp2p.New(opts...)
@@ -153,14 +185,12 @@ func main() {
 
 	log.Printf("[P2P] Nó local iniciado: %s", host.ID())
 
-	// Inicializa Kademlia DHT
 	kademliaDHT, err := dht.New(host, dht.Mode(dht.ModeClient))
 	if err != nil {
 		log.Fatalf("Erro ao criar DHT: %v", err)
 	}
 	_ = kademliaDHT.Bootstrap(ctx)
 
-	// Conecta aos nós bootstrap em segundo plano
 	connectBootstrap := func() {
 		for _, addr := range dht.DefaultBootstrapPeers {
 			pi, err := peer.AddrInfoFromP2pAddr(addr)
@@ -184,20 +214,24 @@ func main() {
 	log.Println("==========================================================")
 	log.Printf("[HA_STATE:SEARCHING] Buscando nó do Home Assistant na rede P2P DHT...")
 
-	// 0. OTIMIZAÇÃO CRÍTICA: Tenta reconexão ultra-rápida com endereços salvos em cache
+	connectStartTime := time.Now()
+	usedCacheForConnection := false
+
+	// 0. Reconexão rápida via Cache
 	if *cacheDir != "" {
 		cachedAddrs := loadCachedAddrs(*cacheDir)
 		if len(cachedAddrs) > 0 {
 			log.Printf("[P2P] Tentando reconexão imediata com %d endereços recentes em cache...", len(cachedAddrs))
 			fastCtx, fastCancel := context.WithTimeout(ctx, 4*time.Second)
 			if err := host.Connect(fastCtx, peer.AddrInfo{ID: targetPeerID, Addrs: cachedAddrs}); err == nil {
+				usedCacheForConnection = true
 				log.Printf("[HA_STATE:CONNECTED] Conectado instantaneamente ao Home Assistant via cache!")
 			}
 			fastCancel()
 		}
 	}
 
-	// Monitor contínuo do estado de conectividade
+	// Monitor de conectividade contínuo
 	go func() {
 		var wasConnected bool = false
 		for {
@@ -205,22 +239,32 @@ func main() {
 			isConnected := host.Network().Connectedness(targetPeerID) == network.Connected
 			if isConnected && !wasConnected {
 				wasConnected = true
+				durationMs := time.Since(connectStartTime).Milliseconds()
 				log.Printf("[HA_STATE:CONNECTED] Home Assistant conectado e pronto!")
-				// Salva os endereços ativos no cache
+
 				if *cacheDir != "" {
 					addrs := host.Peerstore().Addrs(targetPeerID)
 					if len(addrs) > 0 {
 						saveCachedAddrs(*cacheDir, addrs)
 					}
 				}
+
+				// Envia relatório de diagnóstico para o Home Assistant
+				go func(dur int64, c bool) {
+					time.Sleep(1 * time.Second)
+					sendReport(host, targetPeerID, *cacheDir, c, dur)
+				}(durationMs, usedCacheForConnection)
+
 			} else if !isConnected && wasConnected {
 				wasConnected = false
+				connectStartTime = time.Now()
+				usedCacheForConnection = false
 				log.Printf("[HA_STATE:SEARCHING] Conexão com Home Assistant perdida, buscando novamente...")
 			}
 		}
 	}()
 
-	// Loop de busca resiliente com timeout rígido e fallback automático
+	// Loop de busca DHT resiliente
 	routingDiscovery := routing.NewRoutingDiscovery(kademliaDHT)
 	go func() {
 		attempt := 0
@@ -232,13 +276,11 @@ func main() {
 			}
 
 			attempt++
-
-			// Se temos poucos nós conectados no swarm, renova o bootstrap
 			if len(host.Network().Peers()) < 3 {
 				connectBootstrap()
 			}
 
-			// 1. Busca direta no Kademlia DHT com timeout rígido de 10 segundos
+			// 1. Busca Kademlia DHT (timeout 10s)
 			findCtx, findCancel := context.WithTimeout(ctx, 10*time.Second)
 			peerInfo, err := kademliaDHT.FindPeer(findCtx, targetPeerID)
 			findCancel()
@@ -256,7 +298,7 @@ func main() {
 				cCancel()
 			}
 
-			// 2. Busca por Rendezvous Discovery com timeout de 8 segundos
+			// 2. Busca Rendezvous Discovery (timeout 8s)
 			discCtx, discCancel := context.WithTimeout(ctx, 8*time.Second)
 			peerChan, _ := routingDiscovery.FindPeers(discCtx, *peerIDStr)
 			foundViaDisc := false
@@ -281,7 +323,6 @@ func main() {
 				continue
 			}
 
-			// Fallback com backoff adaptativo para economizar bateria e tráfego 4G/5G
 			if attempt < 2 {
 				time.Sleep(2 * time.Second)
 			} else {
@@ -306,6 +347,25 @@ func main() {
 				return
 			}
 			defer stream.Close()
+
+			// Autenticação por Chave PSK com o Add-on
+			if *pskStr != "" {
+				token := computePSKToken(*pskStr)
+				_ = stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if _, err := stream.Write(token[:]); err != nil {
+					log.Printf("[ERRO PSK] Falha ao enviar chave PSK: %v", err)
+					return
+				}
+				_ = stream.SetWriteDeadline(time.Time{})
+
+				authResp := make([]byte, 1)
+				_ = stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+				if _, err := io.ReadFull(stream, authResp); err != nil || authResp[0] != 0x01 {
+					log.Printf("[SEGURANÇA] Conexão REJEITADA pelo Home Assistant: Chave PSK incorreta!")
+					return
+				}
+				_ = stream.SetReadDeadline(time.Time{})
+			}
 
 			var wg sync.WaitGroup
 			wg.Add(2)

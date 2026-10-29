@@ -34,7 +34,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v0.1.0 Beta"
+                android:text="v0.2.0 Beta"
                 android:textSize="11sp"
                 android:textStyle="bold"
                 android:textColor="@color/primary"
@@ -49,7 +49,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Conexão direta P2P sem portas abertas ou CGNAT • Por Jho"
+            android:text="Conexão direta P2P sem portas abertas ou CGNAT • Por Jhonatan Garcia (jhona1234)"
             android:textSize="12sp"
             android:textColor="@color/text_secondary"
             android:layout_marginBottom="16dp" />

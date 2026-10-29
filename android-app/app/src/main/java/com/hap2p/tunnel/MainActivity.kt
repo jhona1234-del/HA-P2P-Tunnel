@@ -135,8 +135,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnOpenHA.setOnClickListener {
-            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:8123"))
-            startActivity(browserIntent)
+            LaunchReceiver.openHomeAssistant(this)
         }
 
         btnCopyLogs.setOnClickListener {
@@ -155,7 +154,21 @@ class MainActivity : AppCompatActivity() {
 
         loadExistingLogs()
         requestNotificationPermission()
+        updateOpenButtonLabel()
         updateStatusUI(TunnelService.haState, TunnelService.haMessage)
+    }
+
+    private fun updateOpenButtonLabel() {
+        val isCompanionInstalled = try {
+            packageManager.getPackageInfo("io.homeassistant.companion.android", 0) != null
+        } catch (_: Exception) {
+            false
+        }
+        if (isCompanionInstalled) {
+            btnOpenHA.text = "ABRIR NO APP HOME ASSISTANT"
+        } else {
+            btnOpenHA.text = "ABRIR HOME ASSISTANT NO NAVEGADOR"
+        }
     }
 
     private fun handleScannedQr(scanned: String) {
@@ -329,6 +342,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(receiver, filter)
         }
+        updateOpenButtonLabel()
         updateStatusUI(TunnelService.haState, TunnelService.haMessage)
     }
 

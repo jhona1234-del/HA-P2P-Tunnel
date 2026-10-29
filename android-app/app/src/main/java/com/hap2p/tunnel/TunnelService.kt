@@ -195,6 +195,14 @@ class TunnelService : Service() {
                         haMessage = "Home Assistant Conectado!"
                         broadcastHAState()
                         updateNotification("Home Assistant Conectado (127.0.0.1:8123)")
+
+                        // Salva histórico de logs para envio do relatório ao Home Assistant
+                        try {
+                            val logFile = File(cacheDir, "recent_logs.txt")
+                            synchronized(logHistory) {
+                                logFile.writeText(logHistory.takeLast(25).joinToString("\n"))
+                            }
+                        } catch (_: Exception) {}
                     } else if (line.contains("[HA_STATE:SEARCHING]") ||
                         line.contains("Conexão com Home Assistant perdida")
                     ) {
@@ -283,13 +291,36 @@ class TunnelService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val stopIntent = Intent(this, TunnelService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            1,
+            stopIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val openIntent = Intent(this, LaunchReceiver::class.java).apply {
+            action = LaunchReceiver.ACTION_OPEN_HA
+        }
+        val openPendingIntent = PendingIntent.getBroadcast(
+            this,
+            2,
+            openIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("HA P2P Tunnel")
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(pendingIntent)
+            .addAction(R.drawable.ic_launch, "Abrir HA", openPendingIntent)
+            .addAction(R.drawable.ic_notification, "Desconectar", stopPendingIntent)
             .setOngoing(true)
-            .build()
+
+        return builder.build()
     }
 
     private fun updateNotification(contentText: String) {
