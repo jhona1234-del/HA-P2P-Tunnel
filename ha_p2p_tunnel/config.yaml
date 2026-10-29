@@ -1,0 +1,25 @@
+name: "HA P2P Tunnel"
+description: "Túnel P2P direto para o APK com painel Ingress, QR Code e download do APK"
+version: "0.1.0"
+slug: "ha_p2p_tunnel"
+init: false
+arch:
+  - aarch64
+  - armv7
+  - amd64
+url: "https://github.com/jho/ha_p2p_tunnel"
+maintainer: "Jho"
+host_network: true
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:tunnel
+panel_title: "HA P2P Tunnel"
+panel_admin: true
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: "Painel Web e download direto do APK"
+options:
+  secret_psk: ""
+schema:
+  secret_psk: str?

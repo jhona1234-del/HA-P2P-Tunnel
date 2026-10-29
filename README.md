@@ -1,29 +1,92 @@
 # 🚇 HA P2P Tunnel
 
-**Acesso remoto P2P direto ao Home Assistant pelo Android — sem abrir portas, sem IP público fixo, sem domínio e sem mensalidades.**
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjhona1234-del%2FHA_P2P_Tunnel)
+[![Home Assistant Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-blue.svg)](https://www.home-assistant.io/)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta-green.svg)](https://github.com/jhona1234-del/HA_P2P_Tunnel/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-O **HA P2P Tunnel** cria um túnel ponto-a-ponto (P2P) criptografado utilizando a pilha `go-libp2p` (QUIC/TCP + Kademlia DHT + Hole Punching + AutoRelay). Ele permite atravessar redes com **CGNAT** nas duas pontas (tanto na internet residencial quanto no 4G/5G do celular), conectando o aplicativo Android diretamente à instância local do Home Assistant (`127.0.0.1:8123`).
+**Acesso remoto P2P direto ao Home Assistant pelo Android — sem abrir portas no roteador, sem IP público fixo, sem DDNS, sem Cloudflare Tunnels e sem custos mensais.**
 
----
-
-## ✨ Funcionalidades Principais
-
-* **Zero Configuração de Rede (Fura CGNAT):** Utiliza *UDP/QUIC Hole Punching*, *UPnP/NAT-PMP* e *AutoRelay* com descoberta via DHT global.
-* **Painel Web Ingress Nativo (Porta 8099):** Interface integrada ao menu lateral do Home Assistant (`mdi:tunnel`).
-* **Download Direto do APK:** O aplicativo Android (`ha-p2p-tunnel.apk`) fica hospedado dentro do próprio Add-on e pode ser baixado na rede local via botão ou QR Code.
-* **Pareamento Instantâneo via QR Code:** Gera automaticamente o QR Code contendo o `PeerID` e a chave `PSK` (`hap2p://connect?peer=...&psk=...`) para leitura direta no aplicativo.
-* **Segurança de Rede Privada (PSK):** Suporte opcional a chave pré-compartilhada (`secret_psk` derivada com SHA-256), garantindo que apenas clientes com o seu segredo consigam estabelecer *streams* com o seu nó.
-* **Monitoramento em Tempo Real:** Painel com *status* do túnel, *uptime*, conexões ativas no momento, histórico das últimas 30 conexões e contagem de *bytes* trafegados (enviados/recebidos).
-* **Multi-arquitetura:** Compatível com `aarch64`, `armv7` e `amd64`.
+O **HA P2P Tunnel** cria um túnel ponto-a-ponto (P2P) criptografado utilizando a pilha `go-libp2p` (QUIC/TCP + Kademlia DHT + Hole Punching + AutoRelay). Ele atravessa redes com **CGNAT** nas duas pontas (tanto na internet de casa quanto no 4G/5G do celular), conectando seu aplicativo Android diretamente ao Home Assistant (`127.0.0.1:8123`).
 
 ---
 
-## 📦 Estrutura do Repositório
+## ⚡ Como Instalar no Home Assistant (1 Clique)
+
+### Opção 1: Pelo botão My Home Assistant
+Clique no botão abaixo para adicionar este repositório diretamente ao seu Home Assistant:
+
+[![Adicionar Repositório no Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjhona1234-del%2FHA_P2P_Tunnel)
+
+### Opção 2: Manualmente
+1. No seu Home Assistant, vá em **Configurações > Add-ons > Loja de Add-ons** (Add-on Store).
+2. No canto superior direito, clique nos **3 pontinhos verticais (⋮) > Repositórios**.
+3. Adicione a URL do repositório:
+   ```text
+   https://github.com/jhona1234-del/HA_P2P_Tunnel
+   ```
+4. Clique em **Adicionar** e depois em **Fechar**.
+5. Procure por **HA P2P Tunnel** na lista, clique em **Instalar** e depois em **Iniciar**.
+
+---
+
+## 📱 Como Usar (Fluxo Sem Complicações)
+
+1. **Abra o Painel:** No Home Assistant, clique em **"Abrir Interface Web"** (ou no atalho **HA P2P Tunnel** na barra lateral).
+2. **Passo 1 (Baixar App):** Aponte a câmera do seu celular para o **QR Code 1** para baixar o instalador Android (`HA_P2P_Tunnel.apk`) diretamente pela rede local. Instale o APK no seu aparelho.
+3. **Passo 2 (Conectar):** Abra o aplicativo no celular, toque no botão **"📷 ESCANEAR QR CODE DO HA"** e aponte para o **QR Code 2** exibido no monitor.
+4. **Pronto!** Toque em **"INICIAR TÚNEL P2P"** e depois em **"ABRIR HOME ASSISTANT NO NAVEGADOR"**.
+
+---
+
+## ✨ Funcionalidades
+
+* 🚀 **Zero Configuração de Portas (Fura CGNAT):** Usa *UDP/QUIC Hole Punching*, *UPnP/NAT-PMP* e *IPv6* com descoberta descentralizada via Kademlia DHT global.
+* 🛡️ **Rede Privada Opcional (PSK):** Suporte a senha pré-compartilhada (`secret_psk` via SHA-256) que rejeita tentativas de conexão no nível criptográfico antes mesmo de chegar ao HA.
+* 📦 **APK Embutido:** O próprio Add-on hospeda o instalador Android compilado, permitindo download direto em qualquer rede.
+* 📷 **Leitor de QR Code Integrado:** O app Android possui leitor de QR embutido com câmera para pareamento instantâneo.
+* 📊 **Painel Web Ingress:** Monitoramento em tempo real com contador de conexões ativas, histórico de clientes, endereços remotos e tráfego de dados.
+* 🔋 **Foreground Service Android:** Mantém o túnel ativo em segundo plano mesmo se a tela apagar ou se o celular alternar entre Wi-Fi e 4G/5G.
+
+---
+
+## 📂 Estrutura do Projeto
 
 ```text
-├── config.yaml         # Manifesto do Add-on (Ingress, permissões e schema)
-├── Dockerfile          # Build multi-stage em Go + Alpine 3.20 e inclusão do APK
-├── go.mod / go.sum     # Dependências Go (go-libp2p, kad-dht, go-qrcode)
-├── main.go             # Servidor P2P, Proxy TCP 8123 e Servidor Web Ingress
-├── run.sh              # Script de inicialização e persistência da chave (/data/peer.key)
-└── ha-p2p-tunnel.apk   # Aplicativo Android cliente embutido para download
+├── repository.yaml         # Manifesto do repositório oficial do Home Assistant
+├── README.md               # Esta documentação
+├── LICENSE                 # Licença MIT
+│
+├── ha_p2p_tunnel/          # Add-on oficial do Home Assistant
+│   ├── config.yaml         # Metadados, permissões, Ingress e portas do Add-on
+│   ├── Dockerfile          # Compilação multi-stage em Go + Alpine 3.20
+│   ├── main.go             # Motor P2P, Ingress Web UI, servidor de APK e logs
+│   ├── run.sh              # Inicialização e persistência de chaves
+│   ├── go.mod / go.sum     # Módulos libp2p, kad-dht e go-qrcode
+│   ├── ha-p2p-tunnel.apk   # Binário do APK pronto para download
+│   └── DOCS.md             # Documentação interna exibida no painel do HA
+│
+└── android-app/            # Código-fonte completo do App Android (Kotlin + Gradle)
+    ├── app/src/main/
+    │   ├── java/com/hap2p/tunnel/
+    │   │   ├── MainActivity.kt     # Interface com leitor de QR e logs em tempo real
+    │   │   ├── TunnelService.kt    # Foreground Service persistente com WakeLock
+    │   │   └── BootReceiver.kt     # Início automático no boot
+    │   └── jniLibs/arm64-v8a/
+    │       └── libtunnel.so        # Motor do túnel Go compilado para ARM64
+```
+
+---
+
+## 🔒 Segurança
+
+* Todas as conexões utilizam criptografia de ponta a ponta nativa do protocolo **QUIC** (TLS 1.3) gerenciada pela pilha `libp2p`.
+* O Add-on expõe localmente apenas a porta interna para tráfego local; nenhuma porta pública externa precisa ser aberta no roteador.
+* Se configurada a chave `PSK`, nenhum nó consegue sequer realizar o handshake inicial se não possuir a senha de rede.
+
+---
+
+## 👨‍💻 Autor
+
+Criado por **Jho** ([@jhona1234-del](https://github.com/jhona1234-del))  
+Licenciado sob a [Licença MIT](LICENSE).

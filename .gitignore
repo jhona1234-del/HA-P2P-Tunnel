@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Android & Gradle
+.gradle/
+build/
+app/build/
+*.iml
+.idea/
+local.properties
+
+# Logs
+*.log
