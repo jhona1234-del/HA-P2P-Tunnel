@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -109,12 +110,29 @@ func sendReport(h host.Host, targetPeerID peer.ID, cacheDir string, usedCache bo
 		}
 	}
 
+	var humanSummary []string
+	pid := h.ID().String()
+	shortPID := pid
+	if len(pid) > 16 {
+		shortPID = pid[:10] + "..." + pid[len(pid)-6:]
+	}
+	humanSummary = append(humanSummary, fmt.Sprintf("📱 Dispositivo: Celular Android (%s)", shortPID))
+	if usedCache {
+		humanSummary = append(humanSummary, fmt.Sprintf("⚡ Modo de Conexão: Instantâneo via Cache (levou %d ms)", durationMs))
+	} else {
+		humanSummary = append(humanSummary, fmt.Sprintf("🔍 Modo de Conexão: Varredura DHT Global (levou %.1f s)", float64(durationMs)/1000))
+	}
+	humanSummary = append(humanSummary, fmt.Sprintf("🕒 Conectado com Sucesso às: %s", time.Now().Format("15:04:05")))
+	humanSummary = append(humanSummary, "🔒 Criptografia: Túnel P2P TLS 1.3 / Noise (Ponta a Ponta)")
+	humanSummary = append(humanSummary, "✅ Status: Pronto e trafegando dados com o Home Assistant")
+
 	report := map[string]interface{}{
 		"peer_id":             h.ID().String(),
 		"device":              "Android",
 		"connected_at":        time.Now().Format("2006-01-02 15:04:05"),
 		"connect_duration_ms": durationMs,
 		"used_cache":          usedCache,
+		"human_summary":       humanSummary,
 		"logs":                logs,
 	}
 
@@ -130,6 +148,9 @@ func sendReport(h host.Host, targetPeerID peer.ID, cacheDir string, usedCache bo
 }
 
 func main() {
+	// Desativa prefixo de timestamp padrão do Go para não duplicar com o timestamp local do Android
+	log.SetFlags(0)
+
 	// Silencia mensagens de erro de rota do netlink no Android (SELinux)
 	_ = ipfslog.SetLogLevel("basichost", "fatal")
 	_ = ipfslog.SetLogLevel("autonat", "fatal")

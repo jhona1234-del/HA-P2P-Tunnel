@@ -49,12 +49,26 @@ type ConnectionEvent struct {
 	Active    bool      `json:"active"`
 }
 
+type DeviceSession struct {
+	PeerID        string    `json:"peer_id"`
+	RemoteAddr    string    `json:"remote_addr"`
+	NetworkType   string    `json:"network_type"`
+	ActiveStreams int       `json:"active_streams"`
+	TotalStreams  int64     `json:"total_streams"`
+	BytesIn       int64     `json:"bytes_in"`
+	BytesOut      int64     `json:"bytes_out"`
+	FirstSeen     time.Time `json:"first_seen"`
+	LastSeen      time.Time `json:"last_seen"`
+	IsOnline      bool      `json:"is_online"`
+}
+
 type ClientReport struct {
 	PeerID            string    `json:"peer_id"`
 	Device            string    `json:"device"`
 	ConnectedAt       string    `json:"connected_at"`
 	ConnectDurationMs int64     `json:"connect_duration_ms"`
 	UsedCache         bool      `json:"used_cache"`
+	HumanSummary      []string  `json:"human_summary"`
 	Logs              []string  `json:"logs"`
 	ReceivedAt        time.Time `json:"received_at"`
 }
@@ -66,6 +80,7 @@ type TunnelStats struct {
 	RejectedStreams int64
 	TotalBytesIn    int64
 	TotalBytesOut   int64
+	Devices         map[string]*DeviceSession
 	History         []*ConnectionEvent
 	ClientReports   []*ClientReport
 	StartedAt       time.Time
@@ -73,8 +88,27 @@ type TunnelStats struct {
 
 var stats = &TunnelStats{
 	StartedAt:     time.Now(),
+	Devices:       make(map[string]*DeviceSession),
 	History:       make([]*ConnectionEvent, 0),
 	ClientReports: make([]*ClientReport, 0),
+}
+
+func classifyNetwork(remote string) string {
+	isV6 := strings.Contains(remote, "/ip6/")
+	isQuic := strings.Contains(remote, "/quic")
+	isRelay := strings.Contains(remote, "/p2p-circuit")
+
+	proto := "TCP"
+	if isQuic {
+		proto = "QUIC"
+	}
+	if isRelay {
+		return "Relay (" + proto + ")"
+	}
+	if isV6 {
+		return "IPv6 Direto (" + proto + ")"
+	}
+	return "IPv4 Direto (" + proto + ")"
 }
 
 func (s *TunnelStats) addEvent(e *ConnectionEvent) {
@@ -226,6 +260,12 @@ func startIngressServer(port string, hostID string, secretPSK string) {
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		stats.mu.Lock()
 		defer stats.mu.Unlock()
+
+		var devList []*DeviceSession
+		for _, d := range stats.Devices {
+			devList = append(devList, d)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"active_streams":   atomic.LoadInt64(&stats.ActiveStreams),
@@ -234,6 +274,7 @@ func startIngressServer(port string, hostID string, secretPSK string) {
 			"total_bytes_in":   atomic.LoadInt64(&stats.TotalBytesIn),
 			"total_bytes_out":  atomic.LoadInt64(&stats.TotalBytesOut),
 			"uptime":           time.Since(stats.StartedAt).Round(time.Second).String(),
+			"devices":          devList,
 			"history":          stats.History,
 			"client_reports":   stats.ClientReports,
 		})
@@ -257,7 +298,7 @@ func startIngressServer(port string, hostID string, secretPSK string) {
   :root { --bg: #0b1120; --card: #1e293b; --text: #f8fafc; --primary: #38bdf8; --success: #22c55e; --border: #334155; }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
-  .container { max-width: 960px; margin: 0 auto; }
+  .container { max-width: 980px; margin: 0 auto; }
   .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
   .title { font-size: 22px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 10px; }
   .dev-tag { font-size: 13px; color: #94a3b8; font-weight: normal; margin-left: 8px; }
@@ -270,28 +311,29 @@ func startIngressServer(port string, hostID string, secretPSK string) {
   .qr-box { text-align: center; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: space-between; }
   .qr-img { background: #fff; padding: 10px; border-radius: 12px; max-width: 210px; height: auto; box-shadow: 0 4px 14px rgba(0,0,0,0.5); margin: 8px 0; }
   .qr-desc { font-size: 13px; color: #94a3b8; margin: 4px 0 12px 0; text-align: center; }
-  .btn { width: 100%%%%; background: #0284c7; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: 700; font-size: 14px; cursor: pointer; text-decoration: none; text-align: center; transition: 0.2s; display: inline-block; }
+  .btn { background: #0284c7; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; text-decoration: none; text-align: center; transition: 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
   .btn:hover { background: #0369a1; }
   .btn-green { background: #16a34a; }
   .btn-green:hover { background: #15803d; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: #94a3b8; }
+  .btn-outline:hover { background: #334155; color: #fff; }
   .link-direct { margin-top: 10px; font-size: 12px; color: #94a3b8; word-break: break-all; }
   .link-direct a { color: #38bdf8; text-decoration: underline; }
   .peer-id-box { background: #0b1120; padding: 10px; border-radius: 8px; border: 1px solid var(--border); word-break: break-all; font-family: monospace; font-size: 12px; color: #38bdf8; margin-bottom: 10px; width: 100%%%%; }
-  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 20px; }
   .stat-card { background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 14px; text-align: center; }
   .stat-card .val { font-size: 20px; font-weight: 700; color: #fff; margin-top: 6px; }
   .stat-card .lbl { font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; }
-  .badge { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .badge { padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; display: inline-block; }
   .badge-on { background: #15803d; color: #dcfce7; }
   .badge-off { background: #475569; color: #f1f5f9; }
   .table-box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; overflow-x: auto; margin-top: 20px; }
   table { width: 100%%%%; border-collapse: collapse; font-size: 13px; text-align: left; }
-  th { color: #94a3b8; padding: 10px; border-bottom: 1px solid var(--border); }
-  td { padding: 10px; border-bottom: 1px solid #1e293b; color: #e2e8f0; }
+  th { color: #94a3b8; padding: 12px 10px; border-bottom: 1px solid var(--border); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { padding: 12px 10px; border-bottom: 1px solid #1e293b; color: #e2e8f0; }
   tr:last-child td { border-bottom: none; }
-  .live-tag { color: var(--success); font-weight: 700; animation: blink 1.5s infinite; }
-  .diag-box { background: #0a0f1d; border: 1px solid #1e293b; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 11px; color: #38bdf8; max-height: 160px; overflow-y: auto; white-space: pre-wrap; margin-top: 10px; }
-  @keyframes blink { 0%%%%,100%%%% { opacity: 1; } 50%%%% { opacity: 0.4; } }
+  .live-tag { color: var(--success); font-weight: 700; }
+  .diag-card { background: #0f172a; border: 1px solid #1e3a8a; border-radius: 12px; padding: 16px; margin-top: 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; }
 </style>
 </head>
 <body>
@@ -299,7 +341,7 @@ func startIngressServer(port string, hostID string, secretPSK string) {
   <div class="header">
     <div class="title">
       <span class="status-dot"></span> HA P2P Tunnel 
-      <span class="dev-tag">v%s (Beta) • Dev: <b>%s</b></span>
+      <span class="dev-tag">v%s (Beta) • Desenvolvido por: <b>%s</b></span>
     </div>
     <div>Rede Privada (PSK): %s</div>
   </div>
@@ -331,50 +373,100 @@ func startIngressServer(port string, hostID string, secretPSK string) {
   <div class="card">
     <h2>Métricas em Tempo Real</h2>
     <div class="stat-grid">
-      <div class="stat-card"><div class="lbl">Streams Ativos</div><div class="val" id="activeStreams" style="color:var(--success)">0</div></div>
-      <div class="stat-card"><div class="lbl">Total Conexões</div><div class="val" id="totalStreams">0</div></div>
+      <div class="stat-card"><div class="lbl">Dispositivos Ativos</div><div class="val" id="activeDevices" style="color:var(--success)">0</div></div>
+      <div class="stat-card"><div class="lbl">Streams HTTP Paralelas</div><div class="val" id="activeStreams" style="color:#38bdf8">0</div></div>
       <div class="stat-card"><div class="lbl">Tráfego Enviado</div><div class="val" id="totalBytesOut">0 KB</div></div>
       <div class="stat-card"><div class="lbl">Tráfego Recebido</div><div class="val" id="totalBytesIn">0 KB</div></div>
       <div class="stat-card"><div class="lbl">Uptime</div><div class="val" id="uptime">0s</div></div>
     </div>
   </div>
 
-  <!-- Diagnóstico do App Cliente -->
-  <div class="table-box" id="diagBoxContainer" style="display:none;">
-    <h2 style="margin-top:0; color:#38bdf8; font-size:15px;">📱 Relatório de Diagnóstico do Celular (Última Conexão)</h2>
-    <div id="diagContent"></div>
+  <!-- Card Limpo de Diagnóstico do Celular com Botões de Cópia e Exportação -->
+  <div id="diagCardContainer" style="display:none;" class="diag-card">
+    <div>
+      <div style="font-size:14px; font-weight:700; color:#38bdf8; display:flex; align-items:center; gap:8px;">
+        <span>📱 Relatório de Diagnóstico do Celular</span>
+        <span id="diagBadgeCache" class="badge" style="background:#064e3b; color:#6ee7b7;">Cache</span>
+      </div>
+      <div id="diagInfoText" style="font-size:12px; color:#94a3b8; margin-top:4px;">
+        Recebido às 00:00:00 • Tempo de busca: 0ms
+      </div>
+    </div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn" id="btnCopyHuman" onclick="copyHumanSummary()">📄 Copiar Resumo (Humano)</button>
+      <button class="btn" id="btnCopyTech" onclick="copyTechLogs()">📋 Copiar Logs (Técnico)</button>
+      <button class="btn btn-outline" id="btnExportCSV" onclick="exportCSV()">📥 Baixar CSV</button>
+    </div>
   </div>
 
-  <!-- Registro de Conexões Recentes -->
+  <!-- Tabela Limpa e Inteligente de Dispositivos Conectados -->
   <div class="table-box">
-    <h2 style="margin-top:0; color:#94a3b8; font-size:15px;">Registro de Conexões Recentes</h2>
-    <table>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h2 style="margin:0; color:#94a3b8; font-size:15px;">📱 Dispositivos Conectados</h2>
+      <button class="btn btn-outline" style="font-size:11px; padding:6px 12px;" onclick="toggleRawView()" id="btnToggleRaw">Mostrar Canais HTTP Detalhados</button>
+    </div>
+
+    <!-- Tabela Agrupada por Dispositivo (Sem duplicações!) -->
+    <table id="tableDevices">
       <thead>
         <tr>
           <th>Status</th>
-          <th>Peer ID Remoto</th>
-          <th>Endereço Remoto</th>
-          <th>Início</th>
-          <th>Duração</th>
-          <th>Trafegado</th>
+          <th>Dispositivo</th>
+          <th>Tipo de Conexão</th>
+          <th>Canais Paralelos</th>
+          <th>Tráfego</th>
+          <th>Primeiro Acesso</th>
+          <th>Última Atividade</th>
         </tr>
       </thead>
-      <tbody id="historyBody">
-        <tr><td colspan="6" style="text-align:center; color:#64748b; padding:20px;">Nenhuma conexão registrada ainda.</td></tr>
+      <tbody id="devicesBody">
+        <tr><td colspan="7" style="text-align:center; color:#64748b; padding:20px;">Nenhum dispositivo conectado no momento.</td></tr>
       </tbody>
     </table>
+
+    <!-- Tabela Técnica Opcional de Streams HTTP (Inicia oculta) -->
+    <div id="rawStreamsContainer" style="display:none; margin-top:20px;">
+      <h3 style="font-size:13px; color:#94a3b8; margin-bottom:8px;">Canais HTTP Individuais (Streams Multiplexadas):</h3>
+      <table id="tableRaw">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Peer ID Remoto</th>
+            <th>Endereço Remoto</th>
+            <th>Início</th>
+            <th>Duração</th>
+            <th>Trafegado</th>
+          </tr>
+        </thead>
+        <tbody id="rawBody"></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
 <script>
+let lastReport = null;
+let lastStats = null;
+let showRaw = false;
+
+function toggleRawView() {
+  showRaw = !showRaw;
+  document.getElementById("rawStreamsContainer").style.display = showRaw ? "block" : "none";
+  document.getElementById("btnToggleRaw").innerText = showRaw ? "Ocultar Canais HTTP" : "Mostrar Canais HTTP Detalhados";
+}
+
 function copyPeer() {
   const text = document.getElementById("peerText").innerText.trim();
   const btn = document.getElementById("btnCopyPeer");
+  copyToClipboard(text, btn, "✓ Copiado com Sucesso!", " Copiar Peer ID");
+}
+
+function copyToClipboard(text, btn, successMsg, defaultMsg) {
   function onSuccess() {
-    btn.innerText = "✓ Copiado com Sucesso!";
+    btn.innerText = successMsg;
     btn.style.background = "#16a34a";
     setTimeout(() => {
-      btn.innerText = " Copiar Peer ID";
+      btn.innerText = defaultMsg;
       btn.style.background = "";
     }, 2500);
   }
@@ -398,6 +490,58 @@ function copyPeer() {
   }
 }
 
+function copyHumanSummary() {
+  if (!lastReport) return;
+  const btn = document.getElementById("btnCopyHuman");
+  let text = "=== RELATÓRIO DO TÚNEL HOME ASSISTANT P2P ===\n";
+  if (lastReport.human_summary && lastReport.human_summary.length > 0) {
+    text += lastReport.human_summary.join("\n") + "\n";
+  } else {
+    text += "Dispositivo: " + lastReport.device + "\n";
+    text += "Tempo de Conexão: " + (lastReport.connect_duration_ms / 1000).toFixed(1) + " segundos\n";
+    text += "Modo: " + (lastReport.used_cache ? "Cache Instantâneo" : "Varredura DHT") + "\n";
+  }
+  copyToClipboard(text, btn, "✓ Resumo Copiado!", "📄 Copiar Resumo (Humano)");
+}
+
+function copyTechLogs() {
+  if (!lastReport || !lastReport.logs) return;
+  const btn = document.getElementById("btnCopyTech");
+  const text = lastReport.logs.join("\n");
+  copyToClipboard(text, btn, "✓ Logs Copiados!", "📋 Copiar Logs (Técnico)");
+}
+
+function exportCSV() {
+  if (!lastStats) return;
+  let csv = "data:text/csv;charset=utf-8,";
+  csv += "Status,Dispositivo,PeerID,Tipo_Conexao,Canais_Paralelos,Trafego_KB,Primeiro_Acesso,Ultima_Atividade\n";
+  
+  if (lastStats.devices && lastStats.devices.length > 0) {
+    lastStats.devices.forEach(d => {
+      const status = d.is_online ? "Online" : "Offline";
+      const trafKB = (((d.bytes_in || 0) + (d.bytes_out || 0)) / 1024).toFixed(1);
+      csv += [
+        status,
+        "Celular Android",
+        d.peer_id,
+        '"' + (d.network_type || "P2P") + '"',
+        d.active_streams,
+        trafKB,
+        '"' + new Date(d.first_seen).toLocaleString() + '"',
+        '"' + new Date(d.last_seen).toLocaleString() + '"'
+      ].join(",") + "\n";
+    });
+  }
+  
+  const encodedUri = encodeURI(csv);
+  const link = document.createElement("a");
+  link.setAttribute("href", encodedUri);
+  link.setAttribute("download", "conexoes_ha_p2p_" + new Date().toISOString().slice(0,10) + ".csv");
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 function formatBytes(bytes) {
   if (bytes === 0) return "0 KB";
   const kb = bytes / 1024;
@@ -409,30 +553,75 @@ function updateStats() {
   fetch("./api/stats")
     .then(r => r.json())
     .then(data => {
+      lastStats = data;
       document.getElementById("activeStreams").innerText = data.active_streams;
       document.getElementById("totalStreams").innerText = data.total_streams;
       document.getElementById("uptime").innerText = data.uptime;
       if (data.total_bytes_out) document.getElementById("totalBytesOut").innerText = formatBytes(data.total_bytes_out);
       if (data.total_bytes_in) document.getElementById("totalBytesIn").innerText = formatBytes(data.total_bytes_in);
 
-      // Diagnóstico dos logs do cliente
+      // Atualiza relatório de diagnóstico do celular
       if (data.client_reports && data.client_reports.length > 0) {
-        const r = data.client_reports[0];
-        document.getElementById("diagBoxContainer").style.display = "block";
-        const cacheText = r.used_cache ? '<span style="color:#22c55e">Sim (Instantâneo)</span>' : 'Não (Varredura DHT)';
-        const logText = (r.logs && r.logs.length) ? r.logs.join("\n") : "Sem logs detalhados.";
-        document.getElementById("diagContent").innerHTML =
-          '<div style="font-size:13px; color:#cbd5e1; margin-bottom:8px;">' +
-            '<b>Dispositivo:</b> ' + r.device + ' &nbsp;|&nbsp; ' +
-            '<b>Tempo de busca:</b> ' + r.connect_duration_ms + 'ms &nbsp;|&nbsp; ' +
-            '<b>Usou Cache:</b> ' + cacheText + ' &nbsp;|&nbsp; ' +
-            '<b>Recebido em:</b> ' + new Date(r.received_at).toLocaleTimeString() +
-          '</div>' +
-          '<div class="diag-box">' + logText + '</div>';
+        lastReport = data.client_reports[0];
+        document.getElementById("diagCardContainer").style.display = "flex";
+        
+        const badge = document.getElementById("diagBadgeCache");
+        if (lastReport.used_cache) {
+          badge.innerText = "Cache Instantâneo (< 100ms)";
+          badge.style.background = "#064e3b";
+          badge.style.color = "#6ee7b7";
+        } else {
+          badge.innerText = "Varredura DHT Global";
+          badge.style.background = "#1e3a8a";
+          badge.style.color = "#bfdbfe";
+        }
+
+        const durSec = (lastReport.connect_duration_ms / 1000).toFixed(1);
+        const timeStr = new Date(lastReport.received_at).toLocaleTimeString();
+        document.getElementById("diagInfoText").innerText = 
+          "Dispositivo: " + lastReport.device + " • Tempo de conexão: " + durSec + "s • Recebido às " + timeStr;
       }
 
+      // 1. Tabela Limpa de Dispositivos Conectados
+      let activeDevCount = 0;
+      if (data.devices && data.devices.length > 0) {
+        let devRows = "";
+        data.devices.forEach(d => {
+          if (d.is_online) activeDevCount++;
+          const statusTag = d.is_online 
+            ? '<span class="live-tag">● Online</span>' 
+            : '<span style="color:#64748b">Offline</span>';
+          const traf = formatBytes((d.bytes_in || 0) + (d.bytes_out || 0));
+          const peerShort = d.peer_id.slice(0, 10) + "..." + d.peer_id.slice(-6);
+          const isV6 = d.network_type && d.network_type.includes("IPv6");
+          const ipBadge = isV6 
+            ? '<span class="badge" style="background:#581c87; color:#e9d5ff;">' + d.network_type + '</span>' 
+            : '<span class="badge" style="background:#1e3a8a; color:#bfdbfe;">' + d.network_type + '</span>';
+
+          const streamsInfo = d.active_streams > 0 
+            ? '<b style="color:#38bdf8">' + d.active_streams + ' ativas</b> (Dashboard / WS)' 
+            : '<span style="color:#64748b">Inativo</span>';
+
+          devRows += '<tr>' +
+            '<td>' + statusTag + '</td>' +
+            '<td><b>Celular Android</b><br><span style="font-family:monospace; font-size:11px; color:#94a3b8;" title="' + d.peer_id + '">' + peerShort + '</span></td>' +
+            '<td>' + ipBadge + '<br><span style="font-size:10px; color:#64748b;">' + d.remote_addr + '</span></td>' +
+            '<td>' + streamsInfo + '</td>' +
+            '<td>' + traf + '</td>' +
+            '<td>' + new Date(d.first_seen).toLocaleTimeString() + '</td>' +
+            '<td>' + new Date(d.last_seen).toLocaleTimeString() + '</td>' +
+          '</tr>';
+        });
+        document.getElementById("devicesBody").innerHTML = devRows;
+      } else {
+        document.getElementById("devicesBody").innerHTML = 
+          '<tr><td colspan="7" style="text-align:center; color:#64748b; padding:20px;">Nenhum dispositivo conectado no momento.</td></tr>';
+      }
+      document.getElementById("activeDevices").innerText = activeDevCount;
+
+      // 2. Tabela Opcional de Streams HTTP Detalhadas
       if (data.history && data.history.length > 0) {
-        let rows = "";
+        let rawRows = "";
         data.history.forEach(h => {
           const statusTag = h.active 
             ? '<span class="live-tag">● Conectado</span>' 
@@ -442,19 +631,19 @@ function updateStats() {
           const peerShort = h.peer_id.slice(0, 10) + "..." + h.peer_id.slice(-6);
           const isV6 = h.remote.includes("/ip6/");
           const ipBadge = isV6 
-            ? '<span style="background:#581c87; color:#e9d5ff; padding:2px 6px; border-radius:4px; font-size:10px; margin-right:4px;">IPv6</span>' 
-            : '<span style="background:#1e3a8a; color:#bfdbfe; padding:2px 6px; border-radius:4px; font-size:10px; margin-right:4px;">IPv4</span>';
+            ? '<span class="badge" style="background:#581c87; color:#e9d5ff; font-size:10px;">IPv6</span>' 
+            : '<span class="badge" style="background:#1e3a8a; color:#bfdbfe; font-size:10px;">IPv4</span>';
 
-          rows += '<tr>' +
+          rawRows += '<tr>' +
             '<td>' + statusTag + '</td>' +
             '<td style="font-family:monospace;" title="' + h.peer_id + '">' + peerShort + '</td>' +
-            '<td style="font-size:11px;">' + ipBadge + h.remote + '</td>' +
+            '<td style="font-size:11px;">' + ipBadge + ' ' + h.remote + '</td>' +
             '<td>' + new Date(h.start_time).toLocaleTimeString() + '</td>' +
             '<td>' + dur + '</td>' +
             '<td>' + traf + '</td>' +
           '</tr>';
         });
-        document.getElementById("historyBody").innerHTML = rows;
+        document.getElementById("rawBody").innerHTML = rawRows;
       }
     }).catch(() => {});
 }
@@ -508,10 +697,6 @@ func main() {
 		libp2p.EnableAutoRelayWithStaticRelays(dht.GetDefaultBootstrapPeerAddrInfos()),
 	)
 
-	// NOTA DE ARQUITETURA: Não usamos libp2p.PrivateNetwork(psk) pois ela bloqueia
-	// a conexão com os nós públicos de bootstrap da DHT. A autenticação por PSK é feita
-	// de forma segura no nível de Stream da conexão, mantendo a descoberta 100% funcional!
-
 	host, err := libp2p.New(opts...)
 	if err != nil {
 		log.Fatalf("[ERRO FATAL] Falha ao iniciar libp2p: %v", err)
@@ -543,7 +728,7 @@ func main() {
 		}
 	}()
 
-	// Handler do Stream de Controle / Relatórios de Diagnóstico do Cliente
+	// Handler de relatórios de diagnóstico enviados pelo Celular
 	host.SetStreamHandler(ProtocolIDReport, func(s network.Stream) {
 		defer s.Close()
 		s.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -551,18 +736,19 @@ func main() {
 		if err := json.NewDecoder(s).Decode(&report); err == nil {
 			report.ReceivedAt = time.Now()
 			stats.addClientReport(&report)
-			log.Printf("[+] [DIAGNÓSTICO] Relatório de conexão recebido do cliente %s (Dispositivo: %s)", report.PeerID, report.Device)
+			log.Printf("[+] [DIAGNÓSTICO] Relatório de conexão recebido do cliente %s (Dispositivo: %s, Duração: %dms)",
+				report.PeerID, report.Device, report.ConnectDurationMs)
 		}
 	})
 
-	// Handler principal de tráfego do Túnel P2P para o Home Assistant
+	// Handler do tráfego do túnel P2P
 	host.SetStreamHandler(ProtocolID, func(s network.Stream) {
 		defer s.Close()
 
 		remotePeer := s.Conn().RemotePeer().String()
 		remoteAddr := s.Conn().RemoteMultiaddr().String()
 
-		// 1. Verificação de Chave PSK (no nível de Stream)
+		// 1. Verificação de Chave PSK (Stream Auth)
 		if pskEnabled {
 			s.SetReadDeadline(time.Now().Add(5 * time.Second))
 			tokenBuf := make([]byte, 32)
@@ -571,18 +757,40 @@ func main() {
 
 			expected := computePSKToken(secretPSK)
 			if err != nil || subtle.ConstantTimeCompare(tokenBuf, expected[:]) != 1 {
-				log.Printf("[SEGURANÇA] Tentativa de conexão REJEITADA de %s: Chave PSK incorreta ou ausente!", remotePeer)
+				log.Printf("[SEGURANÇA] Conexão REJEITADA de %s: Chave PSK incorreta ou ausente!", remotePeer)
 				atomic.AddInt64(&stats.RejectedStreams, 1)
-				_, _ = s.Write([]byte{0x00}) // Rejeitado
+				_, _ = s.Write([]byte{0x00})
 				return
 			}
-			_, _ = s.Write([]byte{0x01}) // Aprovado
+			_, _ = s.Write([]byte{0x01})
 		}
 
-		activeNow := atomic.AddInt64(&stats.ActiveStreams, 1)
+		startTime := time.Now()
+		netType := classifyNetwork(remoteAddr)
+
+		// Registra e agrupa no Dispositivo
+		stats.mu.Lock()
+		dev, exists := stats.Devices[remotePeer]
+		if !exists {
+			dev = &DeviceSession{
+				PeerID:      remotePeer,
+				RemoteAddr:  remoteAddr,
+				NetworkType: netType,
+				FirstSeen:   startTime,
+			}
+			stats.Devices[remotePeer] = dev
+		}
+		dev.ActiveStreams++
+		dev.TotalStreams++
+		dev.RemoteAddr = remoteAddr
+		dev.NetworkType = netType
+		dev.LastSeen = startTime
+		dev.IsOnline = true
+		stats.mu.Unlock()
+
+		atomic.AddInt64(&stats.ActiveStreams, 1)
 		atomic.AddInt64(&stats.TotalStreams, 1)
 
-		startTime := time.Now()
 		event := &ConnectionEvent{
 			PeerID:    remotePeer,
 			Remote:    remoteAddr,
@@ -591,15 +799,19 @@ func main() {
 		}
 		stats.addEvent(event)
 
-		log.Printf("[+] [NOVA CONEXÃO P2P] Cliente autenticado e conectado!")
-		log.Printf("    PeerID: %s", remotePeer)
-		log.Printf("    Origem: %s", remoteAddr)
-		log.Printf("    Streams Ativos: %d", activeNow)
-
 		haConn, err := net.DialTimeout("tcp", "127.0.0.1:8123", 5*time.Second)
 		if err != nil {
-			log.Printf("[-] [ERRO] Falha ao encaminhar para Home Assistant local: %v", err)
+			log.Printf("[-] [ERRO] Falha ao conectar ao Home Assistant (127.0.0.1:8123): %v", err)
 			atomic.AddInt64(&stats.ActiveStreams, -1)
+			stats.mu.Lock()
+			if dev, exists := stats.Devices[remotePeer]; exists {
+				dev.ActiveStreams--
+				if dev.ActiveStreams <= 0 {
+					dev.ActiveStreams = 0
+					dev.IsOnline = false
+				}
+			}
+			stats.mu.Unlock()
 			event.Active = false
 			event.EndTime = time.Now()
 			event.Duration = "0s (falha)"
@@ -624,20 +836,28 @@ func main() {
 		wg.Wait()
 
 		duration := time.Since(startTime).Round(time.Millisecond)
-		remaining := atomic.AddInt64(&stats.ActiveStreams, -1)
+		atomic.AddInt64(&stats.ActiveStreams, -1)
 		atomic.AddInt64(&stats.TotalBytesIn, bytesIn)
 		atomic.AddInt64(&stats.TotalBytesOut, bytesOut)
+
+		stats.mu.Lock()
+		if dev, exists := stats.Devices[remotePeer]; exists {
+			dev.ActiveStreams--
+			dev.BytesIn += bytesIn
+			dev.BytesOut += bytesOut
+			dev.LastSeen = time.Now()
+			if dev.ActiveStreams <= 0 {
+				dev.ActiveStreams = 0
+				dev.IsOnline = false
+			}
+		}
+		stats.mu.Unlock()
 
 		event.Active = false
 		event.EndTime = time.Now()
 		event.Duration = duration.String()
 		event.BytesIn = bytesIn
 		event.BytesOut = bytesOut
-
-		log.Printf("[-] [CONEXÃO ENCERRADA] Cliente desconectado.")
-		log.Printf("    PeerID: %s", remotePeer)
-		log.Printf("    Duração: %v | Trafegado: %.2f KB", duration, float64(bytesIn+bytesOut)/1024)
-		log.Printf("    Streams Ativos Restantes: %d", remaining)
 	})
 
 	fmt.Println("==========================================================================")
