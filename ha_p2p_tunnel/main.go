@@ -419,19 +419,20 @@ function updateStats() {
       if (data.client_reports && data.client_reports.length > 0) {
         const r = data.client_reports[0];
         document.getElementById("diagBoxContainer").style.display = "block";
-        document.getElementById("diagContent").innerHTML = `
-          <div style="font-size:13px; color:#cbd5e1; margin-bottom:8px;">
-            <b>Dispositivo:</b> ${r.device} &nbsp;|&nbsp; 
-            <b>Tempo de busca:</b> ${r.connect_duration_ms}ms &nbsp;|&nbsp; 
-            <b>Usou Cache:</b> ${r.used_cache ? '<span style="color:#22c55e">Sim (Instantâneo)</span>' : 'Não (Varredura DHT)'} &nbsp;|&nbsp; 
-            <b>Recebido em:</b> ${new Date(r.received_at).toLocaleTimeString()}
-          </div>
-          <div class="diag-box">${r.logs ? r.logs.join("\n") : "Sem logs detalhados."}</div>
-        `;
+        const cacheText = r.used_cache ? '<span style="color:#22c55e">Sim (Instantâneo)</span>' : 'Não (Varredura DHT)';
+        const logText = (r.logs && r.logs.length) ? r.logs.join("\n") : "Sem logs detalhados.";
+        document.getElementById("diagContent").innerHTML =
+          '<div style="font-size:13px; color:#cbd5e1; margin-bottom:8px;">' +
+            '<b>Dispositivo:</b> ' + r.device + ' &nbsp;|&nbsp; ' +
+            '<b>Tempo de busca:</b> ' + r.connect_duration_ms + 'ms &nbsp;|&nbsp; ' +
+            '<b>Usou Cache:</b> ' + cacheText + ' &nbsp;|&nbsp; ' +
+            '<b>Recebido em:</b> ' + new Date(r.received_at).toLocaleTimeString() +
+          '</div>' +
+          '<div class="diag-box">' + logText + '</div>';
       }
 
       if (data.history && data.history.length > 0) {
-        let html = "";
+        let rows = "";
         data.history.forEach(h => {
           const statusTag = h.active 
             ? '<span class="live-tag">● Conectado</span>' 
@@ -440,18 +441,20 @@ function updateStats() {
           const traf = formatBytes((h.bytes_in || 0) + (h.bytes_out || 0));
           const peerShort = h.peer_id.slice(0, 10) + "..." + h.peer_id.slice(-6);
           const isV6 = h.remote.includes("/ip6/");
-          const ipBadge = isV6 ? '<span style="background:#581c87; color:#e9d5ff; padding:2px 6px; border-radius:4px; font-size:10px; margin-right:4px;">IPv6</span>' : '<span style="background:#1e3a8a; color:#bfdbfe; padding:2px 6px; border-radius:4px; font-size:10px; margin-right:4px;">IPv4</span>';
+          const ipBadge = isV6 
+            ? '<span style="background:#581c87; color:#e9d5ff; padding:2px 6px; border-radius:4px; font-size:10px; margin-right:4px;">IPv6</span>' 
+            : '<span style="background:#1e3a8a; color:#bfdbfe; padding:2px 6px; border-radius:4px; font-size:10px; margin-right:4px;">IPv4</span>';
 
-          html += `<tr>
-            <td>${statusTag}</td>
-            <td style="font-family:monospace;" title="${h.peer_id}">${peerShort}</td>
-            <td style="font-size:11px;">${ipBadge}${h.remote}</td>
-            <td>${new Date(h.start_time).toLocaleTimeString()}</td>
-            <td>${dur}</td>
-            <td>${traf}</td>
-          </tr>`;
+          rows += '<tr>' +
+            '<td>' + statusTag + '</td>' +
+            '<td style="font-family:monospace;" title="' + h.peer_id + '">' + peerShort + '</td>' +
+            '<td style="font-size:11px;">' + ipBadge + h.remote + '</td>' +
+            '<td>' + new Date(h.start_time).toLocaleTimeString() + '</td>' +
+            '<td>' + dur + '</td>' +
+            '<td>' + traf + '</td>' +
+          '</tr>';
         });
-        document.getElementById("historyBody").innerHTML = html;
+        document.getElementById("historyBody").innerHTML = rows;
       }
     }).catch(() => {});
 }
