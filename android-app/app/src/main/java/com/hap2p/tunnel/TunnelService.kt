@@ -59,10 +59,19 @@ class TunnelService : Service() {
             private set
 
         val logHistory = mutableListOf<String>()
+        private val PEER_REGEX = Regex("12D3KooW[a-zA-Z0-9]{36,}")
+
+        fun maskSensitive(text: String): String {
+            return PEER_REGEX.replace(text) { m ->
+                val id = m.value
+                id.take(10) + "..." + id.takeLast(6)
+            }
+        }
 
         fun addLog(msg: String, context: Context? = null) {
             val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            val formatted = "[$time] $msg"
+            val masked = maskSensitive(msg)
+            val formatted = "[$time] $masked"
             synchronized(logHistory) {
                 logHistory.add(formatted)
                 if (logHistory.size > 100) {
