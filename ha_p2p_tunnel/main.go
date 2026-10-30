@@ -238,7 +238,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 
 	mux.HandleFunc("/qr-apk.png", func(w http.ResponseWriter, r *http.Request) {
 		downloadUrl := fmt.Sprintf("http://%s:8099/download/ha-p2p-tunnel.apk", lanIP)
-		png, err := qrcode.Encode(downloadUrl, qrcode.Medium, 260)
+		png, err := qrcode.Encode(downloadUrl, qrcode.Low, 350)
 		if err != nil {
 			http.Error(w, "Erro ao gerar QR", http.StatusInternalServerError)
 			return
@@ -250,15 +250,32 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 
 	mux.HandleFunc("/qr-peer.png", func(w http.ResponseWriter, r *http.Request) {
 		var addrList []string
+		var ipv6Addr, ipv4Addr string
 		for _, a := range h.Addrs() {
 			s := a.String()
-			if !strings.Contains(s, "/127.0.0.1/") && !strings.Contains(s, "/::1/") {
-				addrList = append(addrList, s)
+			if strings.Contains(s, "/127.0.0.1/") || strings.Contains(s, "/::1/") || strings.Contains(s, "/fe80:") {
+				continue
+			}
+			if strings.Contains(s, "/quic-v1") {
+				if strings.HasPrefix(s, "/ip6/") && ipv6Addr == "" {
+					ipv6Addr = s
+				} else if strings.HasPrefix(s, "/ip4/") && ipv4Addr == "" {
+					ipv4Addr = s
+				}
 			}
 		}
+		if ipv6Addr != "" {
+			addrList = append(addrList, ipv6Addr)
+		}
+		if ipv4Addr != "" {
+			addrList = append(addrList, ipv4Addr)
+		}
+
 		addrsParam := url.QueryEscape(strings.Join(addrList, ","))
 		qrContent := fmt.Sprintf("hap2p://connect?peer=%s&psk=%s&addrs=%s", hostID, url.QueryEscape(secretPSK), addrsParam)
-		png, err := qrcode.Encode(qrContent, qrcode.Medium, 260)
+
+		// Gera com qrcode.Low (7% ECC) para que os blocos fiquem gigantes e a leitura seja instantânea pela câmera
+		png, err := qrcode.Encode(qrContent, qrcode.Low, 420)
 		if err != nil {
 			http.Error(w, "Erro ao gerar QR", http.StatusInternalServerError)
 			return
@@ -320,7 +337,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
   .card h2 { margin-top: 0; font-size: 15px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
   .step-num { background: var(--primary); color: #0b1120; font-size: 12px; font-weight: 800; border-radius: 50%%%%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
   .qr-box { text-align: center; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: space-between; }
-  .qr-img { background: #fff; padding: 10px; border-radius: 12px; max-width: 210px; height: auto; box-shadow: 0 4px 14px rgba(0,0,0,0.5); margin: 8px 0; }
+  .qr-img { background: #fff; padding: 14px; border-radius: 14px; width: 290px; max-width: 90%; height: auto; box-shadow: 0 6px 20px rgba(0,0,0,0.6); margin: 10px 0; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges; }
   .qr-desc { font-size: 13px; color: #94a3b8; margin: 4px 0 12px 0; text-align: center; }
   .btn { background: #0284c7; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; text-decoration: none; text-align: center; transition: 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
   .btn:hover { background: #0369a1; }

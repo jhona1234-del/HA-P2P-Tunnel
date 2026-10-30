@@ -117,11 +117,12 @@ class MainActivity : AppCompatActivity() {
         btnScanQr.setOnClickListener {
             val options = ScanOptions().apply {
                 setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                setPrompt("Aponte a câmera para o QR Code no Home Assistant")
+                setPrompt("Centralize o QR Code do Home Assistant no leitor")
                 setCameraId(0)
                 setBeepEnabled(true)
                 setBarcodeImageEnabled(false)
-                setOrientationLocked(false)
+                setOrientationLocked(true)
+                setCaptureActivity(PortraitCaptureActivity::class.java)
             }
             qrScannerLauncher.launch(options)
         }
