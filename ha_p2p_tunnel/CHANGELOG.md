@@ -6,6 +6,15 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
+## [1.4.0] - 2026-10-30
+
+### 🌐 Modo Híbrido: Acesso HTTPS Porta 443 (Fura-Firewall)
+- **Túnel Outbound HTTPS Porta 443 via Cloudflare:** Integração com Cloudflare Quick Tunnel (`trycloudflare.com`), permitindo acesso direto em redes corporativas e empresariais restritas onde portas UDP ou conexões P2P arbitrárias são bloqueadas por firewall ou proxy corporativo.
+- **Porteiro Local com PSK e Cookie Seguro:** Proteção de acesso com tela de login web exigindo a chave `secret_psk` (ou liberação automática com link `?psk=...`), gravando sessão autenticada em cookie `HttpOnly` seguro por 30 dias.
+- **Compatibilidade Nativa com Home Assistant:** Proxy reverso HTTP e WebSockets configurado para não disparar erros de `trusted_proxies` ou `400 Bad Request` no Home Assistant.
+- **Painel Ingress Híbrido:** Novo card no topo exibindo o link HTTPS ativo em tempo real, botão para copiar o link autenticado e botão para abrir com 1 clique.
+- **Zero Configuração de Domínio:** Funciona imediatamente sem necessidade de criar conta no Cloudflare ou configurar DNS/DuckDNS.
+
 ## [0.2.1] - 2026-10-29
 
 ### 🚀 Melhorias de Velocidade e Conexão Instantânea

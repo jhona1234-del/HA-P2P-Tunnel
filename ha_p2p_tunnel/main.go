@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,9 +14,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,7 +41,7 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.2.0"
+	AppVersion       = "1.4.0"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 )
 
@@ -82,6 +87,7 @@ type TunnelStats struct {
 	RejectedStreams int64
 	TotalBytesIn    int64
 	TotalBytesOut   int64
+	HttpsUrl        string
 	Devices         map[string]*DeviceSession
 	History         []*ConnectionEvent
 	ClientReports   []*ClientReport
@@ -129,6 +135,130 @@ func (s *TunnelStats) addClientReport(r *ClientReport) {
 	if len(s.ClientReports) > 10 {
 		s.ClientReports = s.ClientReports[:10]
 	}
+}
+
+func (s *TunnelStats) setHttpsUrl(u string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.HttpsUrl = u
+}
+
+func (s *TunnelStats) getHttpsUrl() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.HttpsUrl
+}
+
+func deriveAuthToken(secret string) string {
+	h := sha256.Sum256([]byte("ha-https-cookie-v1:" + secret))
+	return hex.EncodeToString(h[:])
+}
+
+// Inicia o Proxy Local (127.0.0.1:8124) protegido por PSK e o Túnel HTTPS na Porta 443 via Cloudflare Quick Tunnel
+func startHttpsTunnel(ctx context.Context, secretPSK string) {
+	targetURL, _ := url.Parse("http://127.0.0.1:8123")
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	expectedToken := deriveAuthToken(secretPSK)
+
+	// Custom Director para compatibilidade com Home Assistant sem exigir trusted_proxies
+	origDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		origDirector(req)
+		req.Host = "127.0.0.1:8123"
+		req.Header.Del("X-Forwarded-For")
+		if req.Header.Get("Origin") != "" {
+			req.Header.Set("Origin", "http://127.0.0.1:8123")
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if secretPSK != "" {
+			// Permite autenticar via query ?psk=SENHA ou formulário POST
+			pskParam := r.URL.Query().Get("psk")
+			if r.Method == http.MethodPost && r.URL.Path == "/__ha_auth" {
+				_ = r.ParseForm()
+				pskParam = r.FormValue("psk")
+			}
+
+			if pskParam != "" {
+				if pskParam == secretPSK {
+					http.SetCookie(w, &http.Cookie{
+						Name:     "ha_p2p_session",
+						Value:    expectedToken,
+						Path:     "/",
+						HttpOnly: true,
+						Secure:   true,
+						MaxAge:   86400 * 30, // 30 dias
+						SameSite: http.SameSiteLaxMode,
+					})
+					http.Redirect(w, r, "/", http.StatusFound)
+					return
+				}
+			}
+
+			// Verifica se já possui o cookie de sessão válido
+			cookie, err := r.Cookie("ha_p2p_session")
+			if err != nil || cookie.Value != expectedToken {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Acesso Protegido</title><style>body{background:#0b1120;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}.box{background:#1e293b;padding:28px;border-radius:12px;border:1px solid #334155;width:100%;max-width:340px;text-align:center}input{width:100%;padding:12px;margin:14px 0;border-radius:8px;border:1px solid #475569;background:#0b1120;color:#fff;box-sizing:border-box}button{width:100%;padding:12px;background:#0284c7;color:#fff;border:none;border-radius:8px;font-weight:bold;cursor:pointer}</style></head><body><div class="box"><h3>🔒 HA P2P Tunnel</h3><p style="font-size:13px;color:#94a3b8">Digite sua chave PSK para acessar o Home Assistant:</p><form method="POST" action="/__ha_auth"><input type="password" name="psk" placeholder="Sua senha secret_psk" required autofocus><button type="submit">Entrar</button></form></div></body></html>`))
+				return
+			}
+		}
+
+		proxy.ServeHTTP(w, r)
+	})
+
+	go func() {
+		srv := &http.Server{
+			Addr:    "127.0.0.1:8124",
+			Handler: mux,
+		}
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[HTTPS-Proxy] Erro no proxy local 8124: %v", err)
+		}
+	}()
+
+	// Mantém o processo cloudflared rodando e captura a URL .trycloudflare.com
+	go func() {
+		urlRegex := regexp.MustCompile(`https://[a-zA-Z0-9-]+\.trycloudflare\.com`)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			cmd := exec.CommandContext(ctx, "/usr/bin/cloudflared", "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8124")
+			stderr, err := cmd.StderrPipe()
+			if err != nil {
+				log.Printf("[HTTPS-Tunnel] Erro ao criar pipe do cloudflared: %v", err)
+				time.Sleep(10 * time.Second)
+				continue
+			}
+
+			if err := cmd.Start(); err != nil {
+				log.Printf("[HTTPS-Tunnel] cloudflared não iniciado (verifique se está instalado): %v", err)
+				time.Sleep(15 * time.Second)
+				continue
+			}
+
+			scanner := bufio.NewScanner(stderr)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if match := urlRegex.FindString(line); match != "" {
+					stats.setHttpsUrl(match)
+					log.Printf("==========================================================================")
+					log.Printf(" [HTTPS 443 ATIVO] URL Direta (Fura Firewall/Proxy): %s", match)
+					log.Printf("==========================================================================")
+				}
+			}
+			_ = cmd.Wait()
+			stats.setHttpsUrl("")
+			time.Sleep(5 * time.Second)
+		}
+	}()
 }
 
 func computePSKToken(secret string) [32]byte {
@@ -286,6 +416,12 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 	})
 
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+		httpsUrl := stats.getHttpsUrl()
+		fullHttpsUrl := httpsUrl
+		if httpsUrl != "" && pskEnabled {
+			fullHttpsUrl = fmt.Sprintf("%s/?psk=%s", httpsUrl, url.QueryEscape(secretPSK))
+		}
+
 		stats.mu.Lock()
 		defer stats.mu.Unlock()
 
@@ -301,6 +437,8 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 			"rejected_streams": atomic.LoadInt64(&stats.RejectedStreams),
 			"total_bytes_in":   atomic.LoadInt64(&stats.TotalBytesIn),
 			"total_bytes_out":  atomic.LoadInt64(&stats.TotalBytesOut),
+			"https_url":        httpsUrl,
+			"https_auth_url":   fullHttpsUrl,
 			"uptime":           time.Since(stats.StartedAt).Round(time.Second).String(),
 			"devices":          devList,
 			"history":          stats.History,
@@ -368,10 +506,21 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 <div class="container">
   <div class="header">
     <div class="title">
-      <span class="status-dot"></span> HA P2P Tunnel 
-      <span class="dev-tag">v%s (Beta) • Desenvolvido por: <b>%s</b></span>
+      <span class="status-dot"></span> HA P2P + HTTPS Tunnel 
+      <span class="dev-tag">v%s • Desenvolvido por: <b>%s</b></span>
     </div>
     <div>Rede Privada (PSK): %s</div>
+  </div>
+
+  <!-- NOVO CARD: Acesso Direto HTTPS / Porta 443 (Windows / Empresa / iOS / Mac) -->
+  <div class="card" style="border-left: 4px solid var(--primary); margin-bottom: 24px;">
+    <h2><span class="step-num">★</span> Acesso Direto HTTPS / Porta 443 (Fura-Firewall / PC da Empresa / iPhone / Mac)</h2>
+    <div class="qr-desc" style="text-align:left; margin-bottom:12px;">Use este endereço em redes corporativas que bloqueiam UDP/P2P ou em computadores sem o app. O tráfego passa 100%% criptografado via HTTPS (porta 443) protegido pela sua chave PSK:</div>
+    <div class="peer-id-box" id="httpsUrlBox" style="font-size:13px; font-weight:bold;">Inicializando túnel HTTPS na porta 443, aguarde alguns segundos...</div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn" id="btnCopyHttps" onclick="copyHttps()">📋 Copiar Link HTTPS (Com Senha)</button>
+      <a class="btn btn-green" id="openHttpsBtn" href="#" target="_blank" style="display:none;">Abrir Home Assistant ↗</a>
+    </div>
   </div>
 
   <div class="grid">
@@ -403,6 +552,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
     <div class="stat-grid">
       <div class="stat-card"><div class="lbl">Dispositivos Ativos</div><div class="val" id="activeDevices" style="color:var(--success)">0</div></div>
       <div class="stat-card"><div class="lbl">Streams HTTP Paralelas</div><div class="val" id="activeStreams" style="color:#38bdf8">0</div></div>
+      <div class="stat-card"><div class="lbl">Túnel HTTPS 443</div><div class="val" id="httpsStatus" style="color:#facc15; font-size:15px; margin-top:8px;">Iniciando...</div></div>
       <div class="stat-card"><div class="lbl">Tráfego Enviado</div><div class="val" id="totalBytesOut">0 KB</div></div>
       <div class="stat-card"><div class="lbl">Tráfego Recebido</div><div class="val" id="totalBytesIn">0 KB</div></div>
       <div class="stat-card"><div class="lbl">Uptime</div><div class="val" id="uptime">0s</div></div>
@@ -476,6 +626,16 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 let lastReport = null;
 let lastStats = null;
 let showRaw = false;
+let currentHttpsAuthUrl = "";
+
+function copyHttps() {
+  if (!currentHttpsAuthUrl) {
+    alert("Aguarde o link HTTPS ser gerado!");
+    return;
+  }
+  const btn = document.getElementById("btnCopyHttps");
+  copyToClipboard(currentHttpsAuthUrl, btn, "✓ Link HTTPS Copiado!", "📋 Copiar Link HTTPS (Com Senha)");
+}
 
 function toggleRawView() {
   showRaw = !showRaw;
@@ -587,6 +747,16 @@ function updateStats() {
       document.getElementById("uptime").innerText = data.uptime;
       if (data.total_bytes_out) document.getElementById("totalBytesOut").innerText = formatBytes(data.total_bytes_out);
       if (data.total_bytes_in) document.getElementById("totalBytesIn").innerText = formatBytes(data.total_bytes_in);
+
+      if (data.https_url) {
+        currentHttpsAuthUrl = data.https_auth_url;
+        document.getElementById("httpsUrlBox").innerText = data.https_auth_url;
+        document.getElementById("httpsStatus").innerText = "Ativo (Porta 443)";
+        document.getElementById("httpsStatus").style.color = "#22c55e";
+        const btn = document.getElementById("openHttpsBtn");
+        btn.href = data.https_auth_url;
+        btn.style.display = "inline-flex";
+      }
 
       // Atualiza relatório de diagnóstico do celular
       if (data.client_reports && data.client_reports.length > 0) {
@@ -709,6 +879,9 @@ func main() {
 
 	secretPSK := readOptionsPSK()
 	pskEnabled := secretPSK != ""
+
+	// 1. Inicia o Túnel HTTPS na Porta 443 via Cloudflare (para Windows/Mac/iPhone e redes restritas com firewall)
+	startHttpsTunnel(ctx, secretPSK)
 
 	var opts []libp2p.Option
 	opts = append(opts,

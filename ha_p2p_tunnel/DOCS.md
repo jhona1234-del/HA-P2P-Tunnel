@@ -60,6 +60,19 @@ flowchart LR
 
 ---
 
+## 🏢 Acesso Direto HTTPS / Porta 443 (Fura-Firewall / PC da Empresa / iPhone / Mac)
+
+Além do túnel P2P ultra-rápido para o seu celular Android, este Add-on inclui um túnel web **HTTPS na porta padrão 443** via Cloudflare Quick Tunnel:
+
+* **Para que serve:** Ideal para acessar o Home Assistant a partir do **computador da empresa**, redes corporativas que bloqueiam portas e conexões P2P, ou em dispositivos sem o app (como iPhones, iPads ou navegadores no Windows/Mac).
+* **Como usar:**
+  1. No painel deste Add-on, localize o card no topo: **★ Acesso Direto HTTPS / Porta 443**.
+  2. Clique em **📋 Copiar Link HTTPS (Com Senha)**.
+  3. Abra esse link em qualquer navegador (no trabalho, iPhone ou outro PC).
+  4. O túnel abrirá o Home Assistant completo (com suporte a WebSockets em tempo real) protegido pela sua senha `secret_psk`!
+
+---
+
 ## 🔒 Modo de Rede Privada (Chave PSK - Opcional)
 
 Por padrão, a conexão exige que você conheça o `PeerID` do servidor. Se você quiser uma camada extra de segurança contra acessos indesejados:
