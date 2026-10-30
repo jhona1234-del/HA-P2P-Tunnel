@@ -1,6 +1,6 @@
 name: "HA P2P Tunnel"
 description: "Túnel P2P direto para o APK com painel Ingress, QR Code e download do APK"
-version: "0.2.0"
+version: "0.2.1"
 slug: "ha_p2p_tunnel"
 init: false
 arch:
@@ -17,8 +17,12 @@ panel_title: "HA P2P Tunnel"
 panel_admin: true
 ports:
   8099/tcp: 8099
+  41820/tcp: 41820
+  41820/udp: 41820
 ports_description:
   8099/tcp: "Painel Web e download direto do APK"
+  41820/tcp: "Túnel P2P TCP"
+  41820/udp: "Túnel P2P QUIC (UDP)"
 options:
   secret_psk: ""
 schema:

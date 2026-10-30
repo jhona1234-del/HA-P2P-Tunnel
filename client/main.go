@@ -157,12 +157,13 @@ func main() {
 
 	peerIDStr := flag.String("peer", "", "PeerID do Add-on do Home Assistant")
 	pskStr := flag.String("psk", "", "Chave secreta PSK (opcional)")
+	addrsStr := flag.String("addrs", "", "Endereços multiaddr diretos/conhecidos (separados por vírgula)")
 	localPort := flag.String("port", "8123", "Porta local para abrir")
 	cacheDir := flag.String("cache", "", "Diretório de cache para identidade e endereços")
 	flag.Parse()
 
 	if *peerIDStr == "" {
-		log.Fatal("Uso: ./ha-client -peer <PEER_ID_DO_HOME_ASSISTANT> [-psk <SENHA>] [-cache <DIR>]")
+		log.Fatal("Uso: ./ha-client -peer <PEER_ID_DO_HOME_ASSISTANT> [-psk <SENHA>] [-addrs <ADDRS>] [-cache <DIR>]")
 	}
 
 	targetPeerID, err := peer.Decode(*peerIDStr)
@@ -233,23 +234,36 @@ func main() {
 	log.Printf("Proxy local ativo em: http://%s", listenAddr)
 	log.Printf("Buscando Home Assistant: %s", targetPeerID)
 	log.Println("==========================================================")
-	log.Printf("[HA_STATE:SEARCHING] Buscando nó do Home Assistant na rede P2P DHT...")
+	log.Printf("[HA_STATE:SEARCHING] Buscando nó do Home Assistant na rede P2P...")
 
 	connectStartTime := time.Now()
 	usedCacheForConnection := false
 
-	// 0. Reconexão rápida via Cache
-	if *cacheDir != "" {
-		cachedAddrs := loadCachedAddrs(*cacheDir)
-		if len(cachedAddrs) > 0 {
-			log.Printf("[P2P] Tentando reconexão imediata com %d endereços recentes em cache...", len(cachedAddrs))
-			fastCtx, fastCancel := context.WithTimeout(ctx, 4*time.Second)
-			if err := host.Connect(fastCtx, peer.AddrInfo{ID: targetPeerID, Addrs: cachedAddrs}); err == nil {
-				usedCacheForConnection = true
-				log.Printf("[HA_STATE:CONNECTED] Conectado instantaneamente ao Home Assistant via cache!")
+	// Coleta endereços conhecidos (passados por argumento e/ou salvos em cache)
+	var directAddrs []multiaddr.Multiaddr
+	if *addrsStr != "" {
+		for _, s := range strings.Split(*addrsStr, ",") {
+			s = strings.TrimSpace(s)
+			if ma, err := multiaddr.NewMultiaddr(s); err == nil {
+				directAddrs = append(directAddrs, ma)
 			}
-			fastCancel()
 		}
+	}
+	if *cacheDir != "" {
+		for _, ca := range loadCachedAddrs(*cacheDir) {
+			directAddrs = append(directAddrs, ca)
+		}
+	}
+
+	// 0. Reconexão ultra-rápida via Endereços Conhecidos / Cache
+	if len(directAddrs) > 0 {
+		log.Printf("[P2P] Tentando conexão imediata com %d endereços diretos/cache...", len(directAddrs))
+		fastCtx, fastCancel := context.WithTimeout(ctx, 3*time.Second)
+		if err := host.Connect(fastCtx, peer.AddrInfo{ID: targetPeerID, Addrs: directAddrs}); err == nil {
+			usedCacheForConnection = true
+			log.Printf("[HA_STATE:CONNECTED] Conectado instantaneamente ao Home Assistant via link direto!")
+		}
+		fastCancel()
 	}
 
 	// Monitor de conectividade contínuo
@@ -285,14 +299,14 @@ func main() {
 		}
 	}()
 
-	// Loop de busca DHT resiliente
+	// Loop de busca DHT resiliente e simultânea
 	routingDiscovery := routing.NewRoutingDiscovery(kademliaDHT)
 	go func() {
 		attempt := 0
 		for {
 			if host.Network().Connectedness(targetPeerID) == network.Connected {
 				attempt = 0
-				time.Sleep(6 * time.Second)
+				time.Sleep(5 * time.Second)
 				continue
 			}
 
@@ -301,54 +315,58 @@ func main() {
 				connectBootstrap()
 			}
 
-			// 1. Busca Kademlia DHT (timeout 10s)
-			findCtx, findCancel := context.WithTimeout(ctx, 10*time.Second)
-			peerInfo, err := kademliaDHT.FindPeer(findCtx, targetPeerID)
-			findCancel()
+			foundChan := make(chan peer.AddrInfo, 4)
+			searchCtx, searchCancel := context.WithTimeout(ctx, 6*time.Second)
 
-			if err == nil && len(peerInfo.Addrs) > 0 {
-				connectCtx, cCancel := context.WithTimeout(ctx, 5*time.Second)
-				if err := host.Connect(connectCtx, peerInfo); err == nil {
-					log.Printf("[HA_STATE:CONNECTED] Conectado diretamente ao Home Assistant!")
+			// 1. Kademlia DHT FindPeer em paralelo
+			go func() {
+				pInfo, err := kademliaDHT.FindPeer(searchCtx, targetPeerID)
+				if err == nil && len(pInfo.Addrs) > 0 {
+					select {
+					case foundChan <- pInfo:
+					case <-searchCtx.Done():
+					}
+				}
+			}()
+
+			// 2. Rendezvous Discovery em paralelo
+			go func() {
+				pChan, err := routingDiscovery.FindPeers(searchCtx, *peerIDStr)
+				if err == nil {
+					for p := range pChan {
+						if p.ID == targetPeerID && len(p.Addrs) > 0 {
+							select {
+							case foundChan <- p:
+							case <-searchCtx.Done():
+							}
+							return
+						}
+					}
+				}
+			}()
+
+			select {
+			case pInfo := <-foundChan:
+				searchCancel()
+				connectCtx, cCancel := context.WithTimeout(ctx, 4*time.Second)
+				if err := host.Connect(connectCtx, pInfo); err == nil {
+					log.Printf("[HA_STATE:CONNECTED] Conectado ao Home Assistant!")
 					if *cacheDir != "" {
-						saveCachedAddrs(*cacheDir, peerInfo.Addrs)
+						saveCachedAddrs(*cacheDir, pInfo.Addrs)
 					}
 					cCancel()
 					continue
 				}
 				cCancel()
-			}
-
-			// 2. Busca Rendezvous Discovery (timeout 8s)
-			discCtx, discCancel := context.WithTimeout(ctx, 8*time.Second)
-			peerChan, _ := routingDiscovery.FindPeers(discCtx, *peerIDStr)
-			foundViaDisc := false
-			for p := range peerChan {
-				if p.ID == targetPeerID && len(p.Addrs) > 0 {
-					connectCtx, cCancel := context.WithTimeout(ctx, 5*time.Second)
-					if err := host.Connect(connectCtx, p); err == nil {
-						log.Printf("[HA_STATE:CONNECTED] Conectado ao Home Assistant via Discovery!")
-						if *cacheDir != "" {
-							saveCachedAddrs(*cacheDir, p.Addrs)
-						}
-						foundViaDisc = true
-						cCancel()
-						break
-					}
-					cCancel()
-				}
-			}
-			discCancel()
-
-			if foundViaDisc {
-				continue
+			case <-searchCtx.Done():
+				searchCancel()
 			}
 
 			if attempt < 2 {
-				time.Sleep(2 * time.Second)
+				time.Sleep(1 * time.Second)
 			} else {
-				log.Printf("[HA_STATE:SEARCHING] Tentativa %d sem resposta. Atualizando rede e tentando novamente...", attempt)
-				time.Sleep(6 * time.Second)
+				log.Printf("[HA_STATE:SEARCHING] Tentativa %d em andamento. Consultando nós DHT...", attempt)
+				time.Sleep(3 * time.Second)
 			}
 		}
 	}()

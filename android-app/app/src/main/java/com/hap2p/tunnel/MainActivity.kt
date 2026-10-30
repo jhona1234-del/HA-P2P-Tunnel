@@ -178,9 +178,13 @@ class MainActivity : AppCompatActivity() {
                 val uri = Uri.parse(trimmed)
                 val peer = uri.getQueryParameter("peer") ?: ""
                 val psk = uri.getQueryParameter("psk") ?: ""
+                val addrs = uri.getQueryParameter("addrs") ?: ""
                 if (peer.isNotEmpty()) {
                     etPeerId.setText(peer)
                     if (psk.isNotEmpty()) etPsk.setText(psk)
+                    if (addrs.isNotEmpty()) {
+                        prefs.edit().putString("cached_addrs", addrs).apply()
+                    }
                     Toast.makeText(this, "Configuração do Home Assistant lida com sucesso!", Toast.LENGTH_SHORT).show()
                 }
             } catch (_: Exception) {}
@@ -231,10 +235,13 @@ class MainActivity : AppCompatActivity() {
 
         appendLog("[APP] Solicitando inicialização do túnel...")
 
+        val cachedAddrs = prefs.getString("cached_addrs", "") ?: ""
+
         val intent = Intent(this, TunnelService::class.java).apply {
             action = TunnelService.ACTION_START
             putExtra(TunnelService.EXTRA_PEER_ID, peerId)
             putExtra(TunnelService.EXTRA_PSK, psk)
+            putExtra(TunnelService.EXTRA_ADDRS, cachedAddrs)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

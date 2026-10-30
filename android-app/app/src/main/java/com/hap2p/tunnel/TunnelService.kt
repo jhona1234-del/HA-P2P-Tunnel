@@ -47,6 +47,7 @@ class TunnelService : Service() {
         const val EXTRA_HA_MESSAGE = "ha_message"
         const val EXTRA_PEER_ID = "peer_id"
         const val EXTRA_PSK = "psk"
+        const val EXTRA_ADDRS = "addrs"
         const val EXTRA_LOG_MESSAGE = "log_message"
 
         var isRunning = false
@@ -113,8 +114,9 @@ class TunnelService : Service() {
             ACTION_START -> {
                 val peerId = intent.getStringExtra(EXTRA_PEER_ID) ?: ""
                 val psk = intent.getStringExtra(EXTRA_PSK) ?: ""
+                val addrs = intent.getStringExtra(EXTRA_ADDRS) ?: ""
                 if (peerId.isNotEmpty()) {
-                    startTunnel(peerId, psk)
+                    startTunnel(peerId, psk, addrs)
                 } else {
                     addLog("[ERRO] PeerID não fornecido!", this)
                 }
@@ -123,7 +125,7 @@ class TunnelService : Service() {
         return START_STICKY
     }
 
-    private fun startTunnel(peerId: String, psk: String) {
+    private fun startTunnel(peerId: String, psk: String, addrs: String = "") {
         if (isRunning) {
             addLog("Túnel já está em execução.", this)
             return
@@ -176,6 +178,12 @@ class TunnelService : Service() {
                     cmd.add("-psk")
                     cmd.add(psk)
                     addLog("Modo de rede privada (PSK) ativado.", this)
+                }
+
+                if (addrs.isNotEmpty()) {
+                    cmd.add("-addrs")
+                    cmd.add(addrs)
+                    addLog("Endereços diretos do HA configurados para conexão rápida.", this)
                 }
 
                 addLog("Executando: ${nativeLib.name} -peer ${peerId.take(12)}...", this)

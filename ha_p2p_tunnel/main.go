@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -198,10 +200,11 @@ func getLocalLANIP() string {
 	return "192.168.100.10"
 }
 
-func startIngressServer(port string, hostID string, secretPSK string) {
+func startIngressServer(port string, h host.Host, secretPSK string) {
 	mux := http.NewServeMux()
 	pskEnabled := secretPSK != ""
 	lanIP := getLocalLANIP()
+	hostID := h.ID().String()
 
 	apkHandler := func(w http.ResponseWriter, r *http.Request) {
 		apkPaths := []string{
@@ -222,6 +225,9 @@ func startIngressServer(port string, hostID string, secretPSK string) {
 		}
 		w.Header().Set("Content-Type", "application/vnd.android.package-archive")
 		w.Header().Set("Content-Disposition", "attachment; filename=\"HA_P2P_Tunnel.apk\"")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		http.ServeFile(w, r, foundPath)
 	}
 
@@ -238,22 +244,27 @@ func startIngressServer(port string, hostID string, secretPSK string) {
 			return
 		}
 		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Write(png)
 	})
 
 	mux.HandleFunc("/qr-peer.png", func(w http.ResponseWriter, r *http.Request) {
-		qrContent := hostID
-		if pskEnabled {
-			qrContent = fmt.Sprintf("hap2p://connect?peer=%s&psk=%s", hostID, secretPSK)
+		var addrList []string
+		for _, a := range h.Addrs() {
+			s := a.String()
+			if !strings.Contains(s, "/127.0.0.1/") && !strings.Contains(s, "/::1/") {
+				addrList = append(addrList, s)
+			}
 		}
+		addrsParam := url.QueryEscape(strings.Join(addrList, ","))
+		qrContent := fmt.Sprintf("hap2p://connect?peer=%s&psk=%s&addrs=%s", hostID, url.QueryEscape(secretPSK), addrsParam)
 		png, err := qrcode.Encode(qrContent, qrcode.Medium, 260)
 		if err != nil {
 			http.Error(w, "Erro ao gerar QR", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Write(png)
 	})
 
@@ -686,10 +697,10 @@ func main() {
 	opts = append(opts,
 		libp2p.Identity(priv),
 		libp2p.ListenAddrStrings(
-			"/ip4/0.0.0.0/tcp/0",
-			"/ip4/0.0.0.0/udp/0/quic-v1",
-			"/ip6/::/tcp/0",
-			"/ip6/::/udp/0/quic-v1",
+			"/ip4/0.0.0.0/tcp/41820",
+			"/ip4/0.0.0.0/udp/41820/quic-v1",
+			"/ip6/::/tcp/41820",
+			"/ip6/::/udp/41820/quic-v1",
 		),
 		libp2p.NATPortMap(),
 		libp2p.EnableNATService(),
@@ -705,7 +716,7 @@ func main() {
 
 	peerIDStr := host.ID().String()
 
-	startIngressServer(*ingressPort, peerIDStr, secretPSK)
+	startIngressServer(*ingressPort, host, secretPSK)
 
 	kademliaDHT, err := dht.New(host, dht.Mode(dht.ModeServer))
 	if err != nil {
