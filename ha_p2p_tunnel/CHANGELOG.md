@@ -6,6 +6,19 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
+## [0.3.1] - 2026-10-30
+
+### 📥 Download Direto de Logs no Add-on
+- **Novo Botão "Baixar Logs do Add-on (.txt)":** Adicionado botão no cabeçalho do painel Ingress que permite baixar o histórico completo de logs do servidor (`ha_p2p_addon_logs_...txt`) com 1 clique diretamente pelo navegador, sem precisar ir nas configurações do Supervisor.
+- **Buffer de Logs em Memória:** Captura de todas as saídas do servidor, eventos de conexão libp2p, inicialização do `cloudflared` e relatórios de clientes para download instantâneo.
+
+### 🌐 Resolução Ingress e Acesso HTTPS no App
+- **Resolução Dinâmica de Endpoints:** O painel Ingress agora calcula as rotas relativas (`getEndpoint`) respeitando o caminho do iframe do Home Assistant (com ou sem barra final), garantindo que o link HTTPS gerado seja atualizado na tela sem falhas.
+- **Renderização Inicial no Servidor:** O link HTTPS ativo agora é injetado diretamente pelo servidor no carregamento da página, eliminando o atraso de inicialização na interface.
+- **Botão HTTPS no App Android:** O QR Code agora transmite o link HTTPS completo autenticado para o app Android. Caso o usuário esteja em uma rede corporativa com bloqueio total de P2P/UDP, um botão destacado **"🌐 Acessar via HTTPS 443"** é exibido para abrir o Home Assistant diretamente pelo navegador.
+
+---
+
 ## [0.3.0] - 2026-10-30
 
 ### 🌐 Modo Híbrido: Acesso HTTPS Porta 443 (Fura-Firewall)

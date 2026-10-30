@@ -34,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnScanQr: MaterialButton
     private lateinit var btnToggleTunnel: MaterialButton
     private lateinit var btnOpenHA: MaterialButton
+    private lateinit var btnOpenHttps: MaterialButton
     private lateinit var badgeStatus: TextView
     private lateinit var viewStatusDot: View
     private lateinit var tvStatusTitle: TextView
@@ -93,6 +94,7 @@ class MainActivity : AppCompatActivity() {
         switchBoot = findViewById(R.id.switchBoot)
         btnToggleTunnel = findViewById(R.id.btnToggleTunnel)
         btnOpenHA = findViewById(R.id.btnOpenHA)
+        btnOpenHttps = findViewById(R.id.btnOpenHttps)
         badgeStatus = findViewById(R.id.badgeStatus)
         viewStatusDot = findViewById(R.id.viewStatusDot)
         tvStatusTitle = findViewById(R.id.tvStatusTitle)
@@ -139,6 +141,27 @@ class MainActivity : AppCompatActivity() {
             LaunchReceiver.openHomeAssistant(this)
         }
 
+        btnOpenHttps.setOnClickListener {
+            val httpsUrl = prefs.getString("https_url", "") ?: ""
+            if (httpsUrl.isNotEmpty()) {
+                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(httpsUrl))
+                startActivity(browserIntent)
+            } else {
+                Toast.makeText(this, "Nenhum link HTTPS configurado. Escaneie o QR Code do Add-on.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        btnOpenHttps.setOnLongClickListener {
+            val httpsUrl = prefs.getString("https_url", "") ?: ""
+            if (httpsUrl.isNotEmpty()) {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText("HA HTTPS URL", httpsUrl)
+                clipboard.setPrimaryClip(clip)
+                Toast.makeText(this, "Link HTTPS copiado!", Toast.LENGTH_SHORT).show()
+                true
+            } else false
+        }
+
         btnCopyLogs.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("HA P2P Logs", tvLogs.text.toString())
@@ -156,7 +179,17 @@ class MainActivity : AppCompatActivity() {
         loadExistingLogs()
         requestNotificationPermission()
         updateOpenButtonLabel()
+        updateHttpsButton()
         updateStatusUI(TunnelService.haState, TunnelService.haMessage)
+    }
+
+    private fun updateHttpsButton() {
+        val httpsUrl = prefs.getString("https_url", "") ?: ""
+        if (httpsUrl.isNotEmpty()) {
+            btnOpenHttps.visibility = View.VISIBLE
+        } else {
+            btnOpenHttps.visibility = View.GONE
+        }
     }
 
     private fun updateOpenButtonLabel() {
@@ -180,11 +213,16 @@ class MainActivity : AppCompatActivity() {
                 val peer = uri.getQueryParameter("peer") ?: ""
                 val psk = uri.getQueryParameter("psk") ?: ""
                 val addrs = uri.getQueryParameter("addrs") ?: ""
+                val https = uri.getQueryParameter("https") ?: ""
                 if (peer.isNotEmpty()) {
                     etPeerId.setText(peer)
                     if (psk.isNotEmpty()) etPsk.setText(psk)
                     if (addrs.isNotEmpty()) {
                         prefs.edit().putString("cached_addrs", addrs).apply()
+                    }
+                    if (https.isNotEmpty()) {
+                        prefs.edit().putString("https_url", https).apply()
+                        updateHttpsButton()
                     }
                     Toast.makeText(this, "Configuração do Home Assistant lida com sucesso!", Toast.LENGTH_SHORT).show()
                 }

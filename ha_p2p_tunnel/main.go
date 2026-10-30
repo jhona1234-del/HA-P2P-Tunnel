@@ -41,7 +41,7 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.3.0"
+	AppVersion       = "0.3.1"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 )
 
@@ -92,6 +92,42 @@ type TunnelStats struct {
 	History         []*ConnectionEvent
 	ClientReports   []*ClientReport
 	StartedAt       time.Time
+}
+
+
+type ServerLogBuffer struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (b *ServerLogBuffer) Write(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	str := string(p)
+	for _, l := range strings.Split(strings.TrimRight(str, "\n"), "\n") {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		b.lines = append(b.lines, l)
+		if len(b.lines) > 2000 {
+			b.lines = b.lines[len(b.lines)-2000:]
+		}
+	}
+	return len(p), nil
+}
+
+func (b *ServerLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Join(b.lines, "\n")
+}
+
+var serverLogs = &ServerLogBuffer{lines: make([]string, 0, 500)}
+
+func printLog(format string, a ...interface{}) {
+	msg := fmt.Sprintf(format, a...)
+	fmt.Print(msg)
+	serverLogs.Write([]byte(msg))
 }
 
 var stats = &TunnelStats{
@@ -379,6 +415,12 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 	mux.HandleFunc("/ha-p2p-tunnel.apk", apkHandler)
 	mux.HandleFunc("/HA_P2P_Tunnel.apk", apkHandler)
 
+	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="ha_p2p_addon_logs_%s.txt"`, time.Now().Format("2006-01-02_150405")))
+		w.Write([]byte(serverLogs.String()))
+	})
+
 	mux.HandleFunc("/qr-apk.png", func(w http.ResponseWriter, r *http.Request) {
 		downloadUrl := fmt.Sprintf("http://%s:8099/download/ha-p2p-tunnel.apk", lanIP)
 		png, err := qrcode.Encode(downloadUrl, qrcode.Low, 350)
@@ -414,8 +456,18 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 			addrList = append(addrList, ipv4Addr)
 		}
 
+		httpsUrl := stats.getHttpsUrl()
+		fullHttpsUrl := httpsUrl
+		if httpsUrl != "" && pskEnabled {
+			fullHttpsUrl = fmt.Sprintf("%s/?psk=%s", httpsUrl, url.QueryEscape(secretPSK))
+		}
+		httpsParam := ""
+		if fullHttpsUrl != "" {
+			httpsParam = "&https=" + url.QueryEscape(fullHttpsUrl)
+		}
+
 		addrsParam := url.QueryEscape(strings.Join(addrList, ","))
-		qrContent := fmt.Sprintf("hap2p://connect?peer=%s&psk=%s&addrs=%s", hostID, url.QueryEscape(secretPSK), addrsParam)
+		qrContent := fmt.Sprintf("hap2p://connect?peer=%s&psk=%s&addrs=%s%s", hostID, url.QueryEscape(secretPSK), addrsParam, httpsParam)
 
 		// Gera com qrcode.Low (7% ECC) para que os blocos fiquem gigantes e a leitura seja instantânea pela câmera
 		png, err := qrcode.Encode(qrContent, qrcode.Low, 420)
@@ -459,20 +511,12 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 		})
 	})
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		pskBadge := `<span class="badge badge-off">Desativada (Livre)</span>`
-		if pskEnabled {
-			pskBadge = `<span class="badge badge-on">Ativada (Protegida)</span>`
-		}
-		directDownloadUrl := fmt.Sprintf("http://%s:8099/download/ha-p2p-tunnel.apk", lanIP)
-
-		html := fmt.Sprintf(`<!DOCTYPE html>
+const htmlTemplate = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HA P2P Tunnel v%s - por %s</title>
+<title>HA P2P Tunnel v{{APP_VERSION}} - por {{DEVELOPER}}</title>
 <style>
   :root { --bg: #0b1120; --card: #1e293b; --text: #f8fafc; --primary: #38bdf8; --success: #22c55e; --border: #334155; }
   * { box-sizing: border-box; }
@@ -481,14 +525,14 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
   .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
   .title { font-size: 22px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 10px; }
   .dev-tag { font-size: 13px; color: #94a3b8; font-weight: normal; margin-left: 8px; }
-  .status-dot { width: 12px; height: 12px; background: var(--success); border-radius: 50%%; display: inline-block; box-shadow: 0 0 12px var(--success); }
+  .status-dot { width: 12px; height: 12px; background: var(--success); border-radius: 50%; display: inline-block; box-shadow: 0 0 12px var(--success); }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
   @media(max-width: 720px) { .grid { grid-template-columns: 1fr; } }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; }
   .card h2 { margin-top: 0; font-size: 15px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
-  .step-num { background: var(--primary); color: #0b1120; font-size: 12px; font-weight: 800; border-radius: 50%%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+  .step-num { background: var(--primary); color: #0b1120; font-size: 12px; font-weight: 800; border-radius: 50%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
   .qr-box { text-align: center; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: space-between; }
-  .qr-img { background: #fff; padding: 14px; border-radius: 14px; width: 290px; max-width: 90%%; height: auto; box-shadow: 0 6px 20px rgba(0,0,0,0.6); margin: 10px 0; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges; }
+  .qr-img { background: #fff; padding: 14px; border-radius: 14px; width: 290px; max-width: 90%; height: auto; box-shadow: 0 6px 20px rgba(0,0,0,0.6); margin: 10px 0; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges; }
   .qr-desc { font-size: 13px; color: #94a3b8; margin: 4px 0 12px 0; text-align: center; }
   .btn { background: #0284c7; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; text-decoration: none; text-align: center; transition: 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
   .btn:hover { background: #0369a1; }
@@ -498,7 +542,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
   .btn-outline:hover { background: #334155; color: #fff; }
   .link-direct { margin-top: 10px; font-size: 12px; color: #94a3b8; word-break: break-all; }
   .link-direct a { color: #38bdf8; text-decoration: underline; }
-  .peer-id-box { background: #0b1120; padding: 10px; border-radius: 8px; border: 1px solid var(--border); word-break: break-all; font-family: monospace; font-size: 12px; color: #38bdf8; margin-bottom: 10px; width: 100%%; }
+  .peer-id-box { background: #0b1120; padding: 10px; border-radius: 8px; border: 1px solid var(--border); word-break: break-all; font-family: monospace; font-size: 12px; color: #38bdf8; margin-bottom: 10px; width: 100%; }
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 20px; }
   .stat-card { background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 14px; text-align: center; }
   .stat-card .val { font-size: 20px; font-weight: 700; color: #fff; margin-top: 6px; }
@@ -507,7 +551,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
   .badge-on { background: #15803d; color: #dcfce7; }
   .badge-off { background: #475569; color: #f1f5f9; }
   .table-box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; overflow-x: auto; margin-top: 20px; }
-  table { width: 100%%; border-collapse: collapse; font-size: 13px; text-align: left; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
   th { color: #94a3b8; padding: 12px 10px; border-bottom: 1px solid var(--border); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
   td { padding: 12px 10px; border-bottom: 1px solid #1e293b; color: #e2e8f0; }
   tr:last-child td { border-bottom: none; }
@@ -520,19 +564,22 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
   <div class="header">
     <div class="title">
       <span class="status-dot"></span> HA P2P + HTTPS Tunnel 
-      <span class="dev-tag">v%s • Desenvolvido por: <b>%s</b></span>
+      <span class="dev-tag">v{{APP_VERSION}} • Desenvolvido por: <b>{{DEVELOPER}}</b></span>
     </div>
-    <div>Rede Privada (PSK): %s</div>
+    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+      <a class="btn btn-outline" id="btnDownloadLogs" href="./api/logs" download style="font-size:12px; padding:7px 14px; border-radius:8px;">📥 Baixar Logs do Add-on (.txt)</a>
+      <div>Rede Privada (PSK): {{PSK_BADGE}}</div>
+    </div>
   </div>
 
-  <!-- NOVO CARD: Acesso Direto HTTPS / Porta 443 (Windows / Empresa / iOS / Mac) -->
+  <!-- CARD: Acesso Direto HTTPS / Porta 443 (Windows / Empresa / iOS / Mac) -->
   <div class="card" style="border-left: 4px solid var(--primary); margin-bottom: 24px;">
     <h2><span class="step-num">★</span> Acesso Direto HTTPS / Porta 443 (Fura-Firewall / PC da Empresa / iPhone / Mac)</h2>
-    <div class="qr-desc" style="text-align:left; margin-bottom:12px;">Use este endereço em redes corporativas que bloqueiam UDP/P2P ou em computadores sem o app. O tráfego passa 100%% criptografado via HTTPS (porta 443) protegido pela sua chave PSK:</div>
-    <div class="peer-id-box" id="httpsUrlBox" style="font-size:13px; font-weight:bold;">Inicializando túnel HTTPS na porta 443, aguarde alguns segundos...</div>
+    <div class="qr-desc" style="text-align:left; margin-bottom:12px;">Use este endereço em redes corporativas que bloqueiam UDP/P2P ou em computadores sem o app. O tráfego passa 100% criptografado via HTTPS (porta 443) protegido pela sua chave PSK:</div>
+    <div class="peer-id-box" id="httpsUrlBox" style="font-size:13px; font-weight:bold;">{{HTTPS_BOX_CONTENT}}</div>
     <div style="display:flex; gap:10px; flex-wrap:wrap;">
       <button class="btn" id="btnCopyHttps" onclick="copyHttps()">📋 Copiar Link HTTPS (Com Senha)</button>
-      <a class="btn btn-green" id="openHttpsBtn" href="#" target="_blank" style="display:none;">Abrir Home Assistant ↗</a>
+      <a class="btn btn-green" id="openHttpsBtn" href="{{HTTPS_FULL_URL}}" target="_blank" style="display:{{OPEN_BTN_DISPLAY}};">Abrir Home Assistant ↗</a>
     </div>
   </div>
 
@@ -541,11 +588,11 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
     <div class="card qr-box">
       <h2><span class="step-num">1</span> Baixar App Android</h2>
       <div class="qr-desc">Aponte a câmera do celular para baixar o APK:</div>
-      <img class="qr-img" src="./qr-apk.png" alt="QR Code Download APK">
-      <a class="btn btn-green" href="%s" target="_blank" download="HA_P2P_Tunnel.apk">⬇ Baixar APK Direto</a>
+      <img class="qr-img" id="qrApkImg" src="./qr-apk.png" alt="QR Code Download APK">
+      <a class="btn btn-green" href="{{DIRECT_DOWNLOAD_URL}}" target="_blank" download="HA_P2P_Tunnel.apk">⬇ Baixar APK Direto</a>
       <div class="link-direct">
         Link na rede local:<br>
-        <a href="%s" target="_blank">%s</a>
+        <a href="{{DIRECT_DOWNLOAD_URL}}" target="_blank">{{DIRECT_DOWNLOAD_URL}}</a>
       </div>
     </div>
 
@@ -553,8 +600,8 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
     <div class="card qr-box">
       <h2><span class="step-num">2</span> Conectar com o App</h2>
       <div class="qr-desc">No App, toque no botão <b>📷 Escanear QR Code do HA</b>:</div>
-      <img class="qr-img" src="./qr-peer.png" alt="QR Code Conexão">
-      <div class="peer-id-box" id="peerText">%s</div>
+      <img class="qr-img" id="qrPeerImg" src="./qr-peer.png" alt="QR Code Conexão">
+      <div class="peer-id-box" id="peerText">{{HOST_ID}}</div>
       <button class="btn" id="btnCopyPeer" onclick="copyPeer()"> Copiar Peer ID</button>
     </div>
   </div>
@@ -565,39 +612,37 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
     <div class="stat-grid">
       <div class="stat-card"><div class="lbl">Dispositivos Ativos</div><div class="val" id="activeDevices" style="color:var(--success)">0</div></div>
       <div class="stat-card"><div class="lbl">Streams HTTP Paralelas</div><div class="val" id="activeStreams" style="color:#38bdf8">0</div></div>
-      <div class="stat-card"><div class="lbl">Túnel HTTPS 443</div><div class="val" id="httpsStatus" style="color:#facc15; font-size:15px; margin-top:8px;">Iniciando...</div></div>
+      <div class="stat-card"><div class="lbl">Túnel HTTPS 443</div><div class="val" id="httpsStatus" style="color:{{HTTPS_STATUS_COLOR}}; font-size:15px; margin-top:8px;">{{HTTPS_STATUS_TEXT}}</div></div>
       <div class="stat-card"><div class="lbl">Tráfego Enviado</div><div class="val" id="totalBytesOut">0 KB</div></div>
       <div class="stat-card"><div class="lbl">Tráfego Recebido</div><div class="val" id="totalBytesIn">0 KB</div></div>
       <div class="stat-card"><div class="lbl">Uptime</div><div class="val" id="uptime">0s</div></div>
     </div>
-  </div>
 
-  <!-- Card Limpo de Diagnóstico do Celular com Botões de Cópia e Exportação -->
-  <div id="diagCardContainer" style="display:none;" class="diag-card">
-    <div>
-      <div style="font-size:14px; font-weight:700; color:#38bdf8; display:flex; align-items:center; gap:8px;">
-        <span>📱 Relatório de Diagnóstico do Celular</span>
-        <span id="diagBadgeCache" class="badge" style="background:#064e3b; color:#6ee7b7;">Cache</span>
+    <!-- CARD DE DIAGNÓSTICO DO CELULAR -->
+    <div class="diag-card" id="diagCardContainer" style="display:none;">
+      <div>
+        <div style="font-weight:700; color:#38bdf8; font-size:14px; margin-bottom:4px; display:flex; align-items:center; gap:8px;">
+          <span>📱 Relatório de Diagnóstico do Celular</span>
+          <span class="badge" id="diagBadgeCache"></span>
+        </div>
+        <div style="font-size:12px; color:#94a3b8;" id="diagInfoText"></div>
       </div>
-      <div id="diagInfoText" style="font-size:12px; color:#94a3b8; margin-top:4px;">
-        Recebido às 00:00:00 • Tempo de busca: 0ms
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-outline" style="font-size:11px; padding:6px 12px;" onclick="copyHumanSummary()" id="btnCopyHuman">📄 Copiar Resumo (Humano)</button>
+        <button class="btn btn-outline" style="font-size:11px; padding:6px 12px;" onclick="copyTechLogs()" id="btnCopyTech">📋 Copiar Logs (Técnico)</button>
+        <button class="btn btn-outline" style="font-size:11px; padding:6px 12px;" onclick="exportCSV()">📥 Baixar CSV</button>
       </div>
-    </div>
-    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-      <button class="btn" id="btnCopyHuman" onclick="copyHumanSummary()">📄 Copiar Resumo (Humano)</button>
-      <button class="btn" id="btnCopyTech" onclick="copyTechLogs()">📋 Copiar Logs (Técnico)</button>
-      <button class="btn btn-outline" id="btnExportCSV" onclick="exportCSV()">📥 Baixar CSV</button>
     </div>
   </div>
 
-  <!-- Tabela Limpa e Inteligente de Dispositivos Conectados -->
+  <!-- Registro de Dispositivos Conectados -->
   <div class="table-box">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
       <h2 style="margin:0; color:#94a3b8; font-size:15px;">📱 Dispositivos Conectados</h2>
       <button class="btn btn-outline" style="font-size:11px; padding:6px 12px;" onclick="toggleRawView()" id="btnToggleRaw">Mostrar Canais HTTP Detalhados</button>
     </div>
 
-    <!-- Tabela Agrupada por Dispositivo (Sem duplicações!) -->
+    <!-- Tabela Agrupada por Dispositivo -->
     <table id="tableDevices">
       <thead>
         <tr>
@@ -615,9 +660,9 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
       </tbody>
     </table>
 
-    <!-- Tabela Técnica Opcional de Streams HTTP (Inicia oculta) -->
-    <div id="rawStreamsContainer" style="display:none; margin-top:20px;">
-      <h3 style="font-size:13px; color:#94a3b8; margin-bottom:8px;">Canais HTTP Individuais (Streams Multiplexadas):</h3>
+    <!-- Tabela de Streams Brutas (Oculta por padrão) -->
+    <div id="rawStreamsContainer" style="display:none; margin-top:20px; border-top:1px dashed var(--border); padding-top:16px;">
+      <div style="font-size:12px; color:#94a3b8; margin-bottom:10px;">Canais HTTP Individuais (Streams libp2p ativas):</div>
       <table id="tableRaw">
         <thead>
           <tr>
@@ -629,37 +674,56 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
             <th>Trafegado</th>
           </tr>
         </thead>
-        <tbody id="rawBody"></tbody>
+        <tbody id="rawBody">
+          <tr><td colspan="6" style="text-align:center; color:#64748b; padding:15px;">Nenhum canal ativo no momento.</td></tr>
+        </tbody>
       </table>
     </div>
   </div>
 </div>
 
 <script>
-let lastReport = null;
 let lastStats = null;
+let lastReport = null;
 let showRaw = false;
-let currentHttpsAuthUrl = "";
+let currentHttpsAuthUrl = "{{HTTPS_FULL_URL}}";
+
+function getEndpoint(relPath) {
+  let base = window.location.pathname;
+  if (!base.endsWith("/")) base += "/";
+  return base + relPath;
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  const logBtn = document.getElementById("btnDownloadLogs");
+  if (logBtn) logBtn.href = getEndpoint("api/logs");
+  const qrApk = document.getElementById("qrApkImg");
+  if (qrApk) qrApk.src = getEndpoint("qr-apk.png");
+  const qrPeer = document.getElementById("qrPeerImg");
+  if (qrPeer) qrPeer.src = getEndpoint("qr-peer.png");
+});
+
+function copyPeer() {
+  const text = document.getElementById("peerText").innerText.trim();
+  const btn = document.getElementById("btnCopyPeer");
+  copyToClipboard(text, btn, "✓ Copiado com Sucesso!", " Copiar Peer ID");
+}
 
 function copyHttps() {
-  if (!currentHttpsAuthUrl) {
+  const urlBox = document.getElementById("httpsUrlBox").innerText.trim();
+  const textToCopy = currentHttpsAuthUrl || (urlBox.startsWith("http") ? urlBox : "");
+  if (!textToCopy) {
     alert("Aguarde o link HTTPS ser gerado!");
     return;
   }
   const btn = document.getElementById("btnCopyHttps");
-  copyToClipboard(currentHttpsAuthUrl, btn, "✓ Link HTTPS Copiado!", "📋 Copiar Link HTTPS (Com Senha)");
+  copyToClipboard(textToCopy, btn, "✓ Link HTTPS Copiado!", "📋 Copiar Link HTTPS (Com Senha)");
 }
 
 function toggleRawView() {
   showRaw = !showRaw;
   document.getElementById("rawStreamsContainer").style.display = showRaw ? "block" : "none";
   document.getElementById("btnToggleRaw").innerText = showRaw ? "Ocultar Canais HTTP" : "Mostrar Canais HTTP Detalhados";
-}
-
-function copyPeer() {
-  const text = document.getElementById("peerText").innerText.trim();
-  const btn = document.getElementById("btnCopyPeer");
-  copyToClipboard(text, btn, "✓ Copiado com Sucesso!", " Copiar Peer ID");
 }
 
 function copyToClipboard(text, btn, successMsg, defaultMsg) {
@@ -751,8 +815,11 @@ function formatBytes(bytes) {
 }
 
 function updateStats() {
-  fetch("./api/stats")
-    .then(r => r.json())
+  fetch(getEndpoint("api/stats"))
+    .then(r => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
     .then(data => {
       lastStats = data;
       document.getElementById("activeStreams").innerText = data.active_streams;
@@ -856,13 +923,53 @@ function updateStats() {
         });
         document.getElementById("rawBody").innerHTML = rawRows;
       }
-    }).catch(() => {});
+    }).catch(err => {
+      console.warn("Erro ao atualizar métricas:", err);
+    });
 }
 setInterval(updateStats, 2000);
 updateStats();
 </script>
 </body>
-</html>`, AppVersion, AppDeveloper, AppVersion, AppDeveloper, pskBadge, directDownloadUrl, directDownloadUrl, directDownloadUrl, hostID)
+</html>`
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		pskBadge := `<span class="badge badge-off">Desativada (Livre)</span>`
+		if pskEnabled {
+			pskBadge = `<span class="badge badge-on">Ativada (Protegida)</span>`
+		}
+		directDownloadUrl := fmt.Sprintf("http://%s:8099/download/ha-p2p-tunnel.apk", lanIP)
+
+		httpsUrl := stats.getHttpsUrl()
+		fullHttpsUrl := httpsUrl
+		if httpsUrl != "" && pskEnabled {
+			fullHttpsUrl = fmt.Sprintf("%s/?psk=%s", httpsUrl, url.QueryEscape(secretPSK))
+		}
+
+		httpsBoxContent := "Inicializando túnel HTTPS na porta 443, aguarde alguns segundos..."
+		httpsStatusText := "Iniciando..."
+		httpsStatusColor := "#facc15"
+		openBtnDisplay := "none"
+		if fullHttpsUrl != "" {
+			httpsBoxContent = fullHttpsUrl
+			httpsStatusText = "Ativo (Porta 443)"
+			httpsStatusColor = "#22c55e"
+			openBtnDisplay = "inline-flex"
+		}
+
+		html := htmlTemplate
+		html = strings.ReplaceAll(html, "{{APP_VERSION}}", AppVersion)
+		html = strings.ReplaceAll(html, "{{DEVELOPER}}", AppDeveloper)
+		html = strings.ReplaceAll(html, "{{PSK_BADGE}}", pskBadge)
+		html = strings.ReplaceAll(html, "{{HTTPS_BOX_CONTENT}}", httpsBoxContent)
+		html = strings.ReplaceAll(html, "{{HTTPS_FULL_URL}}", fullHttpsUrl)
+		html = strings.ReplaceAll(html, "{{OPEN_BTN_DISPLAY}}", openBtnDisplay)
+		html = strings.ReplaceAll(html, "{{HTTPS_STATUS_TEXT}}", httpsStatusText)
+		html = strings.ReplaceAll(html, "{{HTTPS_STATUS_COLOR}}", httpsStatusColor)
+		html = strings.ReplaceAll(html, "{{DIRECT_DOWNLOAD_URL}}", directDownloadUrl)
+		html = strings.ReplaceAll(html, "{{HOST_ID}}", hostID)
+
 		w.Write([]byte(html))
 	})
 
@@ -1074,19 +1181,21 @@ func main() {
 		event.BytesOut = bytesOut
 	})
 
-	fmt.Println("==========================================================================")
-	fmt.Printf("        HA P2P TUNNEL v%s (Beta) - Desenvolvido por %s        \n", AppVersion, AppDeveloper)
-	fmt.Println("==========================================================================")
-	fmt.Printf(" Data/Hora de Início: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Printf(" PEER ID DO SEU HOME ASSISTANT:\n   >>> %s <<<\n", peerIDStr)
-	fmt.Printf(" Painel Web / Ingress: Ativo na porta %s (Acesse pelo Home Assistant)\n", *ingressPort)
+	log.SetOutput(io.MultiWriter(os.Stdout, serverLogs))
+
+	printLog("==========================================================================\n")
+	printLog("        HA P2P TUNNEL v%s (Beta) - Desenvolvido por %s        \n", AppVersion, AppDeveloper)
+	printLog("==========================================================================\n")
+	printLog(" Data/Hora de Início: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	printLog(" PEER ID DO SEU HOME ASSISTANT:\n   >>> %s <<<\n", peerIDStr)
+	printLog(" Painel Web / Ingress: Ativo na porta %s (Acesse pelo Home Assistant)\n", *ingressPort)
 	if pskEnabled {
-		fmt.Println(" Rede Privada (PSK): [ATIVADA] - Autenticação por Stream ativa.")
+		printLog(" Rede Privada (PSK): [ATIVADA] - Autenticação por Stream ativa.\n")
 	} else {
-		fmt.Println(" Rede Privada (PSK): [DESATIVADA] - Qualquer cliente com seu PeerID pode conectar.")
+		printLog(" Rede Privada (PSK): [DESATIVADA] - Qualquer cliente com seu PeerID pode conectar.\n")
 	}
-	fmt.Println(" Protocolos: IPv4 + IPv6 | QUIC + TCP | UPnP NAT-PMP Ativo")
-	fmt.Println("==========================================================================")
+	printLog(" Protocolos: IPv4 + IPv6 | QUIC + TCP | UPnP NAT-PMP Ativo\n")
+	printLog("==========================================================================\n")
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)

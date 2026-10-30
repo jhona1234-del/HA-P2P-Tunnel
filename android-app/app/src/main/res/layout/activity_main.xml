@@ -34,7 +34,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v0.3.0"
+                android:text="v0.3.1"
                 android:textSize="11sp"
                 android:textStyle="bold"
                 android:textColor="@color/primary"
@@ -223,6 +223,22 @@
             app:iconPadding="10dp"
             android:textColor="@android:color/white"
             android:backgroundTint="@color/primary"
+            android:layout_marginBottom="10dp" />
+
+        <!-- ACTION BUTTON: OPEN VIA HTTPS 443 (FALLBACK / CORPORATE) -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnOpenHttps"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="🌐 ACESSAR VIA HTTPS 443 (REDE DA EMPRESA)"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            app:cornerRadius="14dp"
+            android:textColor="@color/accent"
+            app:strokeColor="@color/accent"
+            app:strokeWidth="1dp"
+            android:backgroundTint="#0F2847"
+            android:visibility="gone"
             android:layout_marginBottom="10dp" />
 
         <!-- ACTION BUTTON: TOGGLE TUNNEL -->
