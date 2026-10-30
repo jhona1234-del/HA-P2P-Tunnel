@@ -23,7 +23,8 @@ Ao contrário de serviços convencionais baseados em servidores intermediários 
 
 ```mermaid
 flowchart LR
-    A["📱 App Android (v0.2.1)"] -->|"Túnel P2P Criptografado<br>(QUIC / TLS 1.3 - Porta 41820)"| B["🏠 Home Assistant (Add-on)"]
+    A["📱 App Android (v0.3.0)"] -->|"Túnel P2P Criptografado<br>(QUIC / TLS 1.3 - Porta 41820)"| B["🏠 Home Assistant (Add-on)"]
+    W["💻 PC Empresa / iOS / Mac"] -->|"HTTPS Porta 443 (Fura-Firewall)<br>(trycloudflare.com)"| B
     B -->|"Proxy Loopback Interno"| C["⚙️ Painel Lovelace / WebSocket"]
     subgraph Celular
     A -->|"127.0.0.1:8123"| D["📱 HA Companion App"]
@@ -47,7 +48,7 @@ flowchart LR
    > Se você já tinha uma versão anterior instalada, **desinstale o app antigo antes de instalar o novo** para evitar conflito de assinaturas com a chave de produção oficial.
 
 ### 3. Conectar com 1 Toque
-1. Abra o aplicativo **HA P2P Tunnel** no seu celular (verifique o selo **`v0.2.1`** no topo).
+1. Abra o aplicativo **HA P2P Tunnel** no seu celular (verifique o selo **`v0.3.0`** no topo).
 2. Toque no botão **📷 Escanear QR Code do HA**.
 3. Aponte a câmera para o QR Code do **Passo 2** na tela do computador.
    * O aplicativo lerá instantaneamente o **Peer ID**, a chave **PSK** (se configurada) e os **endereços diretos IPv6/LAN** do seu servidor!

@@ -71,7 +71,21 @@ class TunnelService : Service() {
 
         fun addLog(msg: String, context: Context? = null) {
             val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            val masked = maskSensitive(msg)
+            
+            // Remove timestamp duplicado vindo do binário Go (ex: 2026/10/29 23:29:35)
+            var cleanMsg = msg.replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}\\s+"), "")
+            
+            // Converte erro de permissão netlink do Android para mensagem compreensível
+            if (cleanMsg.contains("failed to resolve local interface addresses") || cleanMsg.contains("netlinkrib: permission denied")) {
+                cleanMsg = "[P2P] Inicializando interfaces de rede (Wi-Fi/4G/5G)..."
+            } else if (cleanMsg.startsWith("ts=") && cleanMsg.contains("msg=\"")) {
+                val m = Regex("msg=\"([^\"]+)\"").find(cleanMsg)
+                if (m != null) {
+                    cleanMsg = "[P2P] " + m.groupValues[1]
+                }
+            }
+
+            val masked = maskSensitive(cleanMsg)
             val formatted = "[$time] $masked"
             synchronized(logHistory) {
                 logHistory.add(formatted)

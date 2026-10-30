@@ -230,23 +230,36 @@ func startHttpsTunnel(ctx context.Context, secretPSK string) {
 			default:
 			}
 
-			cmd := exec.CommandContext(ctx, "/usr/bin/cloudflared", "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8124")
-			stderr, err := cmd.StderrPipe()
-			if err != nil {
-				log.Printf("[HTTPS-Tunnel] Erro ao criar pipe do cloudflared: %v", err)
-				time.Sleep(10 * time.Second)
+			if _, err := os.Stat("/usr/bin/cloudflared"); err != nil {
+				log.Printf("[HTTPS-Tunnel] Aviso: /usr/bin/cloudflared não encontrado no sistema. Túnel HTTPS indisponível.")
+				time.Sleep(30 * time.Second)
 				continue
 			}
 
+			cmd := exec.CommandContext(ctx, "/usr/bin/cloudflared", "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8124")
+			pr, pw := io.Pipe()
+			cmd.Stdout = pw
+			cmd.Stderr = pw
+
 			if err := cmd.Start(); err != nil {
-				log.Printf("[HTTPS-Tunnel] cloudflared não iniciado (verifique se está instalado): %v", err)
+				log.Printf("[HTTPS-Tunnel] cloudflared não iniciado: %v", err)
+				pw.Close()
+				pr.Close()
 				time.Sleep(15 * time.Second)
 				continue
 			}
 
-			scanner := bufio.NewScanner(stderr)
+			go func() {
+				_ = cmd.Wait()
+				pw.Close()
+			}()
+
+			scanner := bufio.NewScanner(pr)
 			for scanner.Scan() {
 				line := scanner.Text()
+				if strings.Contains(line, "trycloudflare.com") || strings.Contains(line, "Registered tunnel connection") || strings.Contains(line, "ERR") {
+					log.Printf("[cloudflared] %s", line)
+				}
 				if match := urlRegex.FindString(line); match != "" {
 					stats.setHttpsUrl(match)
 					log.Printf("==========================================================================")
@@ -254,8 +267,8 @@ func startHttpsTunnel(ctx context.Context, secretPSK string) {
 					log.Printf("==========================================================================")
 				}
 			}
-			_ = cmd.Wait()
 			stats.setHttpsUrl("")
+			pr.Close()
 			time.Sleep(5 * time.Second)
 		}
 	}()
@@ -468,14 +481,14 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
   .header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
   .title { font-size: 22px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 10px; }
   .dev-tag { font-size: 13px; color: #94a3b8; font-weight: normal; margin-left: 8px; }
-  .status-dot { width: 12px; height: 12px; background: var(--success); border-radius: 50%%%%; display: inline-block; box-shadow: 0 0 12px var(--success); }
+  .status-dot { width: 12px; height: 12px; background: var(--success); border-radius: 50%%; display: inline-block; box-shadow: 0 0 12px var(--success); }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
   @media(max-width: 720px) { .grid { grid-template-columns: 1fr; } }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; }
   .card h2 { margin-top: 0; font-size: 15px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
-  .step-num { background: var(--primary); color: #0b1120; font-size: 12px; font-weight: 800; border-radius: 50%%%%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+  .step-num { background: var(--primary); color: #0b1120; font-size: 12px; font-weight: 800; border-radius: 50%%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
   .qr-box { text-align: center; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: space-between; }
-  .qr-img { background: #fff; padding: 14px; border-radius: 14px; width: 290px; max-width: 90%; height: auto; box-shadow: 0 6px 20px rgba(0,0,0,0.6); margin: 10px 0; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges; }
+  .qr-img { background: #fff; padding: 14px; border-radius: 14px; width: 290px; max-width: 90%%; height: auto; box-shadow: 0 6px 20px rgba(0,0,0,0.6); margin: 10px 0; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges; }
   .qr-desc { font-size: 13px; color: #94a3b8; margin: 4px 0 12px 0; text-align: center; }
   .btn { background: #0284c7; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; text-decoration: none; text-align: center; transition: 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
   .btn:hover { background: #0369a1; }
@@ -485,7 +498,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
   .btn-outline:hover { background: #334155; color: #fff; }
   .link-direct { margin-top: 10px; font-size: 12px; color: #94a3b8; word-break: break-all; }
   .link-direct a { color: #38bdf8; text-decoration: underline; }
-  .peer-id-box { background: #0b1120; padding: 10px; border-radius: 8px; border: 1px solid var(--border); word-break: break-all; font-family: monospace; font-size: 12px; color: #38bdf8; margin-bottom: 10px; width: 100%%%%; }
+  .peer-id-box { background: #0b1120; padding: 10px; border-radius: 8px; border: 1px solid var(--border); word-break: break-all; font-family: monospace; font-size: 12px; color: #38bdf8; margin-bottom: 10px; width: 100%%; }
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 20px; }
   .stat-card { background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 14px; text-align: center; }
   .stat-card .val { font-size: 20px; font-weight: 700; color: #fff; margin-top: 6px; }
@@ -494,7 +507,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
   .badge-on { background: #15803d; color: #dcfce7; }
   .badge-off { background: #475569; color: #f1f5f9; }
   .table-box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; overflow-x: auto; margin-top: 20px; }
-  table { width: 100%%%%; border-collapse: collapse; font-size: 13px; text-align: left; }
+  table { width: 100%%; border-collapse: collapse; font-size: 13px; text-align: left; }
   th { color: #94a3b8; padding: 12px 10px; border-bottom: 1px solid var(--border); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
   td { padding: 12px 10px; border-bottom: 1px solid #1e293b; color: #e2e8f0; }
   tr:last-child td { border-bottom: none; }
