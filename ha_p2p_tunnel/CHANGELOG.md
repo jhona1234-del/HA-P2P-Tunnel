@@ -6,7 +6,7 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
-## [1.4.0] - 2026-10-30
+## [0.3.0] - 2026-10-30
 
 ### 🌐 Modo Híbrido: Acesso HTTPS Porta 443 (Fura-Firewall)
 - **Túnel Outbound HTTPS Porta 443 via Cloudflare:** Integração com Cloudflare Quick Tunnel (`trycloudflare.com`), permitindo acesso direto em redes corporativas e empresariais restritas onde portas UDP ou conexões P2P arbitrárias são bloqueadas por firewall ou proxy corporativo.
