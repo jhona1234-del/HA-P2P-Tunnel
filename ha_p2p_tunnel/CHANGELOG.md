@@ -6,6 +6,16 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
+## [0.3.2] - 2026-10-30
+
+### 🛡️ Correção do Erro "400: Bad Request" no Home Assistant
+- **Sanitização Completa de Cabeçalhos de Proxy (`cleanTransport`):** O Home Assistant bloqueia nativamente qualquer requisição HTTP ou WebSocket que contenha cabeçalhos como `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` ou `CF-Connecting-IP` vindos de proxies locais não declarados no `configuration.yaml` (`trusted_proxies`).
+- **Acesso Local Transparente:** O proxy reverso agora atua em nível de transporte removendo todos os cabeçalhos de proxy e reescrevendo o `Host` e `Origin` diretamente para `127.0.0.1:8123`. Dessa forma, o Home Assistant trata todas as conexões como acesso local direto sem exigir nenhuma configuração manual em arquivos YAML.
+- **Normalização do Host no Cloudflared:** Adicionada a flag `--http-host-header 127.0.0.1:8124` no processo do `cloudflared` para prevenir vazamento do cabeçalho Host externo.
+- **Reescrita de Redirecionamentos:** Tratamento automático de cabeçalhos `Location` em respostas 301/302 para manter a navegação no domínio seguro.
+
+---
+
 ## [0.3.1] - 2026-10-30
 
 ### 📥 Download Direto de Logs no Add-on

@@ -1,6 +1,6 @@
 name: "HA P2P Tunnel"
 description: "Túnel Híbrido (P2P + HTTPS 443 anti-firewall) com painel Ingress, QR Code e APK"
-version: "0.3.1"
+version: "0.3.2"
 slug: "ha_p2p_tunnel"
 init: false
 arch:

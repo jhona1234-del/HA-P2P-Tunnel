@@ -41,7 +41,7 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.3.1"
+	AppVersion       = "0.3.2"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 )
 
@@ -191,20 +191,70 @@ func deriveAuthToken(secret string) string {
 }
 
 // Inicia o Proxy Local (127.0.0.1:8124) protegido por PSK e o Túnel HTTPS na Porta 443 via Cloudflare Quick Tunnel
+
+type cleanTransport struct {
+	base http.RoundTripper
+}
+
+func (t *cleanTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Remove TODOS os cabeçalhos de proxy que fazem o Home Assistant disparar 400 Bad Request
+	req.Header.Del("X-Forwarded-For")
+	req.Header.Del("X-Forwarded-Proto")
+	req.Header.Del("X-Forwarded-Host")
+	req.Header.Del("X-Forwarded-Server")
+	req.Header.Del("X-Forwarded-Port")
+	req.Header.Del("CF-Connecting-IP")
+	req.Header.Del("CF-Ray")
+	req.Header.Del("CF-Visitor")
+	req.Header.Del("CF-IPCountry")
+	req.Header.Del("CF-Worker")
+	req.Header.Del("X-Real-IP")
+	req.Header.Del("Forwarded")
+
+	// Apresenta a requisição como se fosse um navegador local puro em 127.0.0.1:8123
+	req.Host = "127.0.0.1:8123"
+	req.URL.Host = "127.0.0.1:8123"
+	req.URL.Scheme = "http"
+
+	// Normaliza Origin para aceitar WebSockets e APIs sem restrição de CORS
+	if req.Header.Get("Origin") != "" {
+		req.Header.Set("Origin", "http://127.0.0.1:8123")
+	}
+
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
+}
+
 func startHttpsTunnel(ctx context.Context, secretPSK string) {
 	targetURL, _ := url.Parse("http://127.0.0.1:8123")
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.Transport = &cleanTransport{base: http.DefaultTransport}
 	expectedToken := deriveAuthToken(secretPSK)
 
-	// Custom Director para compatibilidade com Home Assistant sem exigir trusted_proxies
 	origDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		origDirector(req)
 		req.Host = "127.0.0.1:8123"
-		req.Header.Del("X-Forwarded-For")
+		req.URL.Host = "127.0.0.1:8123"
+		req.URL.Scheme = "http"
+		req.Header["X-Forwarded-For"] = nil
 		if req.Header.Get("Origin") != "" {
 			req.Header.Set("Origin", "http://127.0.0.1:8123")
 		}
+	}
+
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if loc := resp.Header.Get("Location"); loc != "" {
+			if strings.HasPrefix(loc, "http://127.0.0.1:8123/") {
+				resp.Header.Set("Location", strings.Replace(loc, "http://127.0.0.1:8123/", "/", 1))
+			} else if strings.HasPrefix(loc, "http://127.0.0.1:8124/") {
+				resp.Header.Set("Location", strings.Replace(loc, "http://127.0.0.1:8124/", "/", 1))
+			}
+		}
+		return nil
 	}
 
 	mux := http.NewServeMux()
@@ -272,7 +322,7 @@ func startHttpsTunnel(ctx context.Context, secretPSK string) {
 				continue
 			}
 
-			cmd := exec.CommandContext(ctx, "/usr/bin/cloudflared", "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8124")
+			cmd := exec.CommandContext(ctx, "/usr/bin/cloudflared", "tunnel", "--no-autoupdate", "--http-host-header", "127.0.0.1:8124", "--url", "http://127.0.0.1:8124")
 			pr, pw := io.Pipe()
 			cmd.Stdout = pw
 			cmd.Stderr = pw
