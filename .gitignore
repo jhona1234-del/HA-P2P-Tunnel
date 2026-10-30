@@ -1,5 +1,7 @@
-# macOS
+# macOS / Windows platform files
 .DS_Store
+Thumbs.db
+desktop.ini
 
 # Android & Gradle
 .gradle/
@@ -8,6 +10,22 @@ app/build/
 *.iml
 .idea/
 local.properties
+.cxx/
+captures/
 
-# Logs
+# Temporary & Cache
+__pycache__/
+*.pyc
+*.tmp
 *.log
+
+# Heavy dependencies
+node_modules/
+venv/
+.venv/
+env/
+
+# Secrets
+.env
+*.pem
+*.key
