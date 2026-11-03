@@ -547,6 +547,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
+			"peer_id":          hostID,
 			"active_streams":   atomic.LoadInt64(&stats.ActiveStreams),
 			"total_streams":    atomic.LoadInt64(&stats.TotalStreams),
 			"rejected_streams": atomic.LoadInt64(&stats.RejectedStreams),
