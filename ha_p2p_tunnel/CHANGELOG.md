@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.3] - 2026-11-03
+### Adicionado
+- Endpoint /api/stats expondo peer_id (token P2P), https_url e streams ativas para integração nativa no dashboard do Home Assistant.
+- Suporte a monitoramento dinâmico de status e cópia rápida de tokens.
+
+
 Todas as mudanças notáveis deste Add-on serão documentadas neste arquivo.
 
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e este projeto segue [Versionamento Semântico](https://semver.org/lang/pt-BR/).
