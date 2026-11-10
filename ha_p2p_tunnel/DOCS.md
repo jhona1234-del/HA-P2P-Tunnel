@@ -99,6 +99,19 @@ O painel deste Add-on oferece monitoramento em tempo real:
 
 ---
 
+## 🤖 Assistente IA & Bot do Telegram Integrados (v0.4.0)
+
+A partir da versão **0.4.0**, o add-on incorpora um assistente pessoal com bot do Telegram e inteligência artificial Google Gemini integrada:
+
+* **Controle e Status da Casa:** Pergunte ao bot sobre a casa ou peça para ligar e desligar luzes diretamente pelo Telegram.
+* **Fila de Prioridade Gemini com Fallback:** Suporte dinâmico a `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite` e `gemini-2.5-flash`. Se um modelo atingir a cota (429), o próximo da fila assume instantaneamente sem interromper o serviço.
+* **Notificações Sem YAML pelo Home Assistant:**
+  * **Opção 1 (Visual / Zero YAML):** Em qualquer automação, adicione a ação **Disparar evento** -> Tipo do evento: `p2p_telegram` -> Dados: `message: "Sua mensagem aqui"`. O add-on recebe o evento instantaneamente via WebSocket.
+  * **Opção 2 (REST):** Envie requisições POST para `http://local-ha-p2p-tunnel:8099/api/send_telegram` com payload `{"message": "Texto", "target": "admin"}`.
+* **Cadastro de Administrador Instantâneo:** Ao iniciar o bot e enviar `/start` pela primeira vez, seu Chat ID é configurado automaticamente como administrador da casa.
+
+---
+
 ## ❓ Perguntas Frequentes (FAQ)
 
 ### O app gasta muita bateria no celular?
