@@ -1,8 +1,8 @@
 # 🚇 HA P2P Tunnel
 
-[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjhona1234-del%2FHA_P2P_Tunnel)
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjhona1234-del%2FHA-P2P-Tunnel)
 [![Home Assistant Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-blue.svg)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta-green.svg)](https://github.com/jhona1234-del/HA_P2P_Tunnel/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta-green.svg)](https://github.com/jhona1234-del/HA-P2P-Tunnel/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Acesso remoto P2P direto ao Home Assistant pelo Android — sem abrir portas no roteador, sem IP público fixo, sem DDNS, sem Cloudflare Tunnels e sem custos mensais.**
@@ -16,14 +16,14 @@ O **HA P2P Tunnel** cria um túnel ponto-a-ponto (P2P) criptografado utilizando 
 ### Opção 1: Pelo botão My Home Assistant
 Clique no botão abaixo para adicionar este repositório diretamente ao seu Home Assistant:
 
-[![Adicionar Repositório no Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjhona1234-del%2FHA_P2P_Tunnel)
+[![Adicionar Repositório no Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjhona1234-del%2FHA-P2P-Tunnel)
 
 ### Opção 2: Manualmente
 1. No seu Home Assistant, vá em **Configurações > Add-ons > Loja de Add-ons** (Add-on Store).
 2. No canto superior direito, clique nos **3 pontinhos verticais (⋮) > Repositórios**.
 3. Adicione a URL do repositório:
    ```text
-   https://github.com/jhona1234-del/HA_P2P_Tunnel
+   https://github.com/jhona1234-del/HA-P2P-Tunnel
    ```
 4. Clique em **Adicionar** e depois em **Fechar**.
 5. Procure por **HA P2P Tunnel** na lista, clique em **Instalar** e depois em **Iniciar**.
@@ -33,7 +33,7 @@ Clique no botão abaixo para adicionar este repositório diretamente ao seu Home
 ## 📱 Como Usar (Fluxo Sem Complicações)
 
 1. **Abra o Painel:** No Home Assistant, clique em **"Abrir Interface Web"** (ou no atalho **HA P2P Tunnel** na barra lateral).
-2. **Passo 1 (Baixar App):** Aponte a câmera do seu celular para o **QR Code 1** para baixar o instalador Android (`HA_P2P_Tunnel.apk`) diretamente pela rede local. Instale o APK no seu aparelho.
+2. **Passo 1 (Baixar App):** Aponte a câmera do seu celular para o **QR Code 1** para baixar o instalador Android (`HA-P2P-Tunnel.apk`) diretamente pela rede local. Instale o APK no seu aparelho.
 3. **Passo 2 (Conectar):** Abra o aplicativo no celular, toque no botão **"📷 ESCANEAR QR CODE DO HA"** e aponte para o **QR Code 2** exibido no monitor.
 4. **Pronto!** Toque em **"INICIAR TÚNEL P2P"** e depois em **"ABRIR HOME ASSISTANT NO NAVEGADOR"**.
 
@@ -57,7 +57,7 @@ Clique no botão abaixo para adicionar este repositório diretamente ao seu Home
 ├── README.md               # Esta documentação
 ├── LICENSE                 # Licença MIT
 │
-├── ha_p2p_tunnel/          # Add-on oficial do Home Assistant
+├── HA-P2P-Tunnel/          # Add-on oficial do Home Assistant
 │   ├── config.yaml         # Metadados, permissões, Ingress e portas do Add-on
 │   ├── Dockerfile          # Compilação multi-stage em Go + Alpine 3.20
 │   ├── main.go             # Motor P2P, Ingress Web UI, servidor de APK e logs
