@@ -1,6 +1,6 @@
 name: "HA P2P Tunnel"
 description: "Túnel Híbrido (P2P + HTTPS 443) com Assistente IA Gemini e Bot Telegram integrados"
-version: "0.4.0"
+version: "0.4.1"
 slug: "ha_p2p_tunnel"
 init: false
 arch:

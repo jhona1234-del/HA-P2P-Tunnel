@@ -42,7 +42,7 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.4.0"
+	AppVersion       = "0.4.1"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	GitHubApkUrl     = "https://github.com/jhona1234-del/HA-P2P-Tunnel/raw/main/ha_p2p_tunnel/ha-p2p-tunnel.apk"
 	SettingsFilePath = "/data/settings.json"
@@ -1833,7 +1833,7 @@ td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
           <div class="form-group">
             <label class="form-label">Token do Bot (Telegram)</label>
             <input type="password" id="cfgTelegramToken" class="form-input" placeholder="Cole o token do @BotFather" />
-            <div class="form-hint">Obtenha gratuitamente criando um bot no Telegram com o <b>@BotFather</b>.</div>
+            <div class="tip-box" style="margin-top:8px; font-size:11px; line-height:1.6;"><b>?? Como criar seu Bot no Telegram em 1 minuto:</b><br/>1. Abra o <a href="https://t.me/BotFather" target="_blank" style="color:#60a5fa; font-weight:bold; text-decoration:underline;">@BotFather</a> no Telegram.<br/>2. Envie <code>/newbot</code> e siga os passos escolhendo um nome e um @username.<br/>3. Copie o <b>Token HTTP API</b> gerado e cole no campo acima.<br/>4. Salve e depois envie <code>/start</code> para o seu bot para ser registrado como Administrador!</div>
           </div>
 
           <div class="form-group">
