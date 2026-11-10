@@ -1,6 +1,6 @@
 name: "HA P2P Tunnel"
-description: "Túnel Híbrido (P2P + HTTPS 443) com Assistente IA Gemini e Bot Telegram integrados"
-version: "0.4.1"
+description: "Túnel Híbrido (P2P + HTTPS 443 anti-firewall) com painel Ingress, QR Code e APK"
+version: "0.4.2"
 slug: "ha_p2p_tunnel"
 init: false
 arch:
@@ -10,39 +10,21 @@ url: "https://github.com/jhona1234-del/HA-P2P-Tunnel"
 maintainer: "Jhonatan Garcia (jhona1234)"
 host_network: true
 ingress: true
-ingress_port: 8099
+ingress_port: 8098
 panel_icon: mdi:tunnel
 panel_title: "HA P2P Tunnel"
 panel_admin: true
 homeassistant_api: true
 hassio_api: true
-map:
-  - addon_config:rw
-  - share:rw
-  - data:rw
 ports:
-  8099/tcp: 8099
+  8098/tcp: 8098
   41820/tcp: 41820
   41820/udp: 41820
 ports_description:
-  8099/tcp: "Painel Ingress, API de Notificação e Download do APK"
+  8098/tcp: "Painel Web Ingress e download do APK"
   41820/tcp: "Túnel P2P TCP"
   41820/udp: "Túnel P2P QUIC (UDP)"
 options:
   secret_psk: ""
-  enable_telegram: false
-  telegram_bot_token: ""
-  telegram_chat_id: ""
-  bot_name: "Herbie"
-  enable_ai: false
-  gemini_api_key: ""
-  gemini_models_priority: "gemini-3.6-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-2.5-flash"
 schema:
   secret_psk: "password?"
-  enable_telegram: "bool?"
-  telegram_bot_token: "password?"
-  telegram_chat_id: "str?"
-  bot_name: "str?"
-  enable_ai: "bool?"
-  gemini_api_key: "password?"
-  gemini_models_priority: "str?"

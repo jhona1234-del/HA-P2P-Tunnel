@@ -5,22 +5,14 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
-## [0.4.0] - 2026-11-10
+## [0.4.2] - 2026-11-10
 
-### 🚀 Novas Funcionalidades e Grande Atualização
-- **Assistente IA e Bot Telegram Integrados:** O add-on agora incorpora nativamente um bot completo do Telegram com integração ao Google Gemini (usando fila de prioridade com fallback automático: `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`).
-- **Painel de Configurações Dinâmico (Modal ⚙️):** Gerenciador de configurações diretamente no Ingress para ativação/desativação do Telegram e IA, configuração de tokens, senhas e nomes sem necessidade de reiniciar o container.
-- **Assistente de Primeira Viagem (Wizard):** Ao abrir o Ingress pela primeira vez, o assistente pergunta se o usuário deseja ativar Telegram e IA, guiando a configuração do bot e sugerindo os modelos Gemini padrão.
-- **Notificações do Home Assistant Sem Edição de YAML:**
-  - **Via Evento Nativo (Zero YAML):** Qualquer automação do Home Assistant pode disparar avisos no Telegram adicionando a ação `Disparar evento` com o tipo `p2p_telegram` e os dados `message: "Sua mensagem"`. O add-on ouve o evento via WebSocket oficial do Supervisor e encaminha imediatamente.
-  - **Via Endpoint REST (Compatibilidade Total):** Endpoints `POST /api/send_telegram` e `POST /api/notify` na porta 8099 disponíveis para uso por `rest_command` e webhooks.
-- **Registro Automático de Administrador:** Ao enviar `/start` para o bot pela primeira vez, o Chat ID do usuário é automaticamente reconhecido e salvo como administrador oficial.
-- **Comandos Interativos do Bot:**
-  - `/status` — Consulta dispositivos da casa (luzes/interruptores ligados) e status do túnel em tempo real.
-  - `/tunnel` — Exibe links diretos Cloudflare HTTPS e Peer ID persistente.
-  - `/ajuda` — Orientações de interação e controle por IA.
-  - Conversação em linguagem natural com controle de luzes e atuadores via chamada de serviço ao Home Assistant.
-- **Segurança Reforçada (Zero-Leak Architecture):** Chaves de API, senhas PSK e tokens de Telegram residem estritamente no armazenamento persistente local (`/data/settings.json`), sem nenhum dado sensível em código ou histórico.
+### 🚀 Separação de Arquitetura & Otimização
+- **Foco 100% em Conectividade P2P:** A inteligência artificial e o bot do Telegram foram migrados para o seu próprio complemento dedicado (**IABoT**), tornando o `HA P2P Tunnel` ultra-leve, hiper-rápido e focado exclusivamente na superação de CGNAT e acesso remoto 443.
+- **Ícones e Logo com Transparência RGBA:** Remoção dos cantos brancos do `icon.png` e `logo.png`, garantindo integração estética perfeita com o tema escuro do Home Assistant.
+- **Porta Web Reorganizada (8098):** Painel Ingress e download direto do APK configurados para a porta 8098, liberando a porta 8099 para o IABoT.
+- **Sincronização Direta de Sensor Supervisor:** Publicação automática de `sensor.ha_p2p_tunnel_status` com atributos `peer_id`, `https_url`, `active_streams` e `total_streams`.
+- **Card Customizado Integrado:** Suporte ao card `ha-p2p-tunnel-card.js` com popup modal de links e botão de cópia.
 
 ---
 
