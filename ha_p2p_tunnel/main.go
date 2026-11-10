@@ -325,20 +325,30 @@ func computePSKToken(secret string) [32]byte {
 }
 
 // ==========================================================================
-// CONFIGURAÇÕES E ESTADO DO SISTEMA (ZERO PRIVATE DATA NO GITHUB)
+// CONFIGURAÇÕES E CONTROLE DE ACESSO DE USUÁRIOS (ZERO DADOS PRIVADOS NO GIT)
 // ==========================================================================
 
+type TelegramUser struct {
+	ChatID      string `json:"chat_id"`
+	Name        string `json:"name"`
+	Username    string `json:"username"`
+	Status      string `json:"status"` // "admin", "allowed", "pending", "blocked"
+	RequestedAt string `json:"requested_at"`
+	LastSeen    string `json:"last_seen"`
+}
+
 type AppSettings struct {
-	SecretPSK            string            `json:"secret_psk"`
-	EnableTelegram       bool              `json:"enable_telegram"`
-	TelegramBotToken     string            `json:"telegram_bot_token"`
-	TelegramChatID       string            `json:"telegram_chat_id"`
-	BotName              string            `json:"bot_name"`
-	EnableAI             bool              `json:"enable_ai"`
-	GeminiAPIKey         string            `json:"gemini_api_key"`
-	GeminiModelsPriority string            `json:"gemini_models_priority"`
-	KnownUsers           map[string]string `json:"known_users,omitempty"`
-	WizardCompleted      bool              `json:"wizard_completed"`
+	SecretPSK            string                   `json:"secret_psk"`
+	EnableTelegram       bool                     `json:"enable_telegram"`
+	TelegramBotToken     string                   `json:"telegram_bot_token"`
+	TelegramChatID       string                   `json:"telegram_chat_id"`
+	BotName              string                   `json:"bot_name"`
+	EnableAI             bool                     `json:"enable_ai"`
+	GeminiAPIKey         string                   `json:"gemini_api_key"`
+	GeminiModelsPriority string                   `json:"gemini_models_priority"`
+	KnownUsers           map[string]string        `json:"known_users,omitempty"`
+	TelegramUsers        map[string]*TelegramUser `json:"telegram_users,omitempty"`
+	WizardCompleted      bool                     `json:"wizard_completed"`
 }
 
 var (
@@ -359,6 +369,7 @@ func loadAppSettings() AppSettings {
 	s.BotName = "Herbie"
 	s.GeminiModelsPriority = "gemini-3.6-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-2.5-flash"
 	s.KnownUsers = make(map[string]string)
+	s.TelegramUsers = make(map[string]*TelegramUser)
 
 	if data, err := os.ReadFile(SettingsFilePath); err == nil {
 		_ = json.Unmarshal(data, &s)
@@ -372,8 +383,39 @@ func loadAppSettings() AppSettings {
 	if s.GeminiModelsPriority == "" {
 		s.GeminiModelsPriority = "gemini-3.6-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-2.5-flash"
 	}
+	if s.TelegramUsers == nil {
+		s.TelegramUsers = make(map[string]*TelegramUser)
+	}
 	if s.KnownUsers == nil {
 		s.KnownUsers = make(map[string]string)
+	}
+
+	// Migra KnownUsers se existirem
+	for cid, name := range s.KnownUsers {
+		if _, exists := s.TelegramUsers[cid]; !exists {
+			st := "allowed"
+			if cid == s.TelegramChatID {
+				st = "admin"
+			}
+			s.TelegramUsers[cid] = &TelegramUser{
+				ChatID:   cid,
+				Name:     name,
+				Status:   st,
+				LastSeen: time.Now().Format("02/01 15:04"),
+			}
+		}
+	}
+
+	// Garante que o Admin principal esteja cadastrado
+	if s.TelegramChatID != "" {
+		if _, exists := s.TelegramUsers[s.TelegramChatID]; !exists {
+			s.TelegramUsers[s.TelegramChatID] = &TelegramUser{
+				ChatID:   s.TelegramChatID,
+				Name:     "Administrador Principal",
+				Status:   "admin",
+				LastSeen: time.Now().Format("02/01 15:04"),
+			}
+		}
 	}
 
 	currentSettings = s
@@ -394,7 +436,7 @@ func saveAppSettings(s AppSettings) error {
 }
 
 // ==========================================================================
-// TELEGRAM BOT & NOTIFICAÇÕES NATIVAS
+// TELEGRAM BOT & CONTROLE RIGOROSO DE ACESSO
 // ==========================================================================
 
 func sendTelegramNotification(token, chatID, message string) {
@@ -416,9 +458,9 @@ func sendTelegramNotification(token, chatID, message string) {
 		resp, err := client.Post(apiURL, "application/json", bytes.NewBuffer(data))
 		if err == nil {
 			defer resp.Body.Close()
-			log.Printf("[Telegram] Notificação enviada para o chat %s com sucesso!", chatID)
+			log.Printf("[Telegram] Mensagem enviada para %s com sucesso!", chatID)
 		} else {
-			log.Printf("[Telegram] Falha ao enviar notificação Telegram: %v", err)
+			log.Printf("[Telegram] Erro ao enviar mensagem para %s: %v", chatID, err)
 		}
 	}()
 }
@@ -427,7 +469,7 @@ func broadcastTelegramMessage(message, target string) {
 	settingsMu.RLock()
 	token := currentSettings.TelegramBotToken
 	adminChatID := currentSettings.TelegramChatID
-	knownUsers := currentSettings.KnownUsers
+	users := currentSettings.TelegramUsers
 	settingsMu.RUnlock()
 
 	if token == "" {
@@ -438,18 +480,22 @@ func broadcastTelegramMessage(message, target string) {
 	targets := make([]string, 0)
 	targetClean := strings.TrimSpace(strings.ToLower(target))
 
-	if targetClean == "" || targetClean == "todos" || targetClean == "all" || targetClean == "admin" {
-		if adminChatID != "" {
-			targets = append(targets, adminChatID)
-		}
-		for cid := range knownUsers {
-			if cid != adminChatID {
+	if targetClean == "" || targetClean == "todos" || targetClean == "all" {
+		for cid, u := range users {
+			if u.Status == "admin" || u.Status == "allowed" {
 				targets = append(targets, cid)
 			}
 		}
+		if len(targets) == 0 && adminChatID != "" {
+			targets = append(targets, adminChatID)
+		}
+	} else if targetClean == "admin" {
+		if adminChatID != "" {
+			targets = append(targets, adminChatID)
+		}
 	} else {
-		for cid, name := range knownUsers {
-			if strings.EqualFold(name, targetClean) || cid == targetClean {
+		for cid, u := range users {
+			if (u.Status == "admin" || u.Status == "allowed") && (strings.EqualFold(u.Name, targetClean) || strings.EqualFold(u.Username, targetClean) || cid == targetClean) {
 				targets = append(targets, cid)
 			}
 		}
@@ -547,47 +593,222 @@ func runTelegramBotLoop(ctx context.Context, token string) {
 
 			userChatID := fmt.Sprintf("%d", upd.Message.Chat.ID)
 			userName := upd.Message.From.FirstName
+			username := upd.Message.From.Username
 			text := strings.TrimSpace(upd.Message.Text)
 
-			handleTelegramIncoming(token, userChatID, userName, text)
+			handleTelegramIncoming(token, userChatID, userName, username, text)
 		}
 	}
 }
 
-func handleTelegramIncoming(token, userChatID, userName, text string) {
+func handleTelegramIncoming(token, userChatID, userName, username, text string) {
 	settingsMu.Lock()
 	adminChatID := currentSettings.TelegramChatID
 	botName := currentSettings.BotName
 	enableAI := currentSettings.EnableAI
 	geminiKey := currentSettings.GeminiAPIKey
-	if currentSettings.KnownUsers == nil {
-		currentSettings.KnownUsers = make(map[string]string)
+	if currentSettings.TelegramUsers == nil {
+		currentSettings.TelegramUsers = make(map[string]*TelegramUser)
 	}
 
+	nowStr := time.Now().Format("02/01 15:04")
+
+	// 1. PRIMEIRO USUÁRIO É REGISTRADO COMO ADMIN
 	if adminChatID == "" {
 		currentSettings.TelegramChatID = userChatID
-		currentSettings.KnownUsers[userChatID] = userName
+		currentSettings.TelegramUsers[userChatID] = &TelegramUser{
+			ChatID:      userChatID,
+			Name:        userName,
+			Username:    username,
+			Status:      "admin",
+			RequestedAt: nowStr,
+			LastSeen:    nowStr,
+		}
 		settingsMu.Unlock()
 		_ = saveAppSettings(currentSettings)
 
-		msg := fmt.Sprintf("👑 <b>Administrador registrado com sucesso!</b>\n\nOlá, %s! Eu sou o <b>%s</b>, assistente do seu Home Assistant.\nSeu Chat ID (<code>%s</code>) agora é o administrador oficial da casa.\n\nDigite /status ou converse comigo naturalmente!", userName, botName, userChatID)
+		msg := fmt.Sprintf("👑 <b>Administrador registrado com sucesso!</b>\n\nOlá, %s! Eu sou o <b>%s</b>, assistente do seu Home Assistant.\nSeu Chat ID (<code>%s</code>) agora é o administrador oficial da casa.\n\nVocê tem controle total sobre quem pode usar este bot. Digite /status ou converse comigo naturalmente!", userName, botName, userChatID)
 		sendTelegramNotification(token, userChatID, msg)
 		return
 	}
 
-	_, isKnown := currentSettings.KnownUsers[userChatID]
-	isAuthorized := (userChatID == adminChatID) || isKnown
+	// 2. VERIFICA SE O USUÁRIO JÁ EXISTE NO CADASTRO
+	u, exists := currentSettings.TelegramUsers[userChatID]
+	if !exists {
+		// NOVO USUÁRIO DESCONHECIDO!
+		u = &TelegramUser{
+			ChatID:      userChatID,
+			Name:        userName,
+			Username:    username,
+			Status:      "pending",
+			RequestedAt: nowStr,
+			LastSeen:    nowStr,
+		}
+		currentSettings.TelegramUsers[userChatID] = u
+		settingsMu.Unlock()
+		_ = saveAppSettings(currentSettings)
+
+		// Responde para o usuário solicitante
+		pendingMsg := fmt.Sprintf("⏳ <b>Acesso Pendente de Aprovação</b>\n\nOlá, %s! O acesso a este bot é restrito aos moradores autorizados da casa.\nUma notificação foi enviada ao administrador. Por favor, aguarde a liberação.", userName)
+		sendTelegramNotification(token, userChatID, pendingMsg)
+
+		// Notifica o Administrador no Telegram com comando de aprovação
+		userDisplay := userName
+		if username != "" {
+			userDisplay += fmt.Sprintf(" (@%s)", username)
+		}
+		adminAlert := fmt.Sprintf("🔔 <b>Novo Pedido de Acesso ao Bot!</b>\n\n👤 <b>Nome:</b> %s\n🆔 <b>Chat ID:</b> <code>%s</code>\n💬 <b>Mensagem:</b> <i>\"%s\"</i>\n\n<b>Para autorizar, responda com:</b>\n<code>/aprovar %s</code>\n\n<b>Para recusar/bloquear:</b>\n<code>/bloquear %s</code>", userDisplay, userChatID, text, userChatID, userChatID)
+		sendTelegramNotification(token, adminChatID, adminAlert)
+
+		// Notifica o Home Assistant via Persistent Notification
+		haNotif := fmt.Sprintf("O usuário **%s** (Chat ID: `%s`) solicitou acesso ao bot do Telegram.\n\nMensagem: *\"%s\"*\n\n👉 Acesse o painel do HA P2P Tunnel ou responda `/aprovar %s` no Telegram para autorizar.", userDisplay, userChatID, text, userChatID)
+		callHomeAssistantService("persistent_notification", "create", map[string]string{
+			"title":           fmt.Sprintf("🔔 Novo Usuário Telegram: %s", userName),
+			"message":         haNotif,
+			"notification_id": fmt.Sprintf("telegram_req_%s", userChatID),
+		})
+		return
+	}
+
+	u.LastSeen = nowStr
+	if userName != "" {
+		u.Name = userName
+	}
+	if username != "" {
+		u.Username = username
+	}
+	userStatus := u.Status
 	settingsMu.Unlock()
 
-	if !isAuthorized {
-		msg := fmt.Sprintf("⛔ <b>Acesso não autorizado.</b>\n\nSeu Chat ID é: <code>%s</code>\nSolicite ao administrador para autorizar seu acesso nas configurações do painel.", userChatID)
+	// 3. SE O USUÁRIO FOR PENDENTE OU BLOQUEADO
+	if userStatus == "pending" {
+		msg := "⏳ <b>Acesso em Análise</b>\n\nSua solicitação de acesso ainda está sob avaliação do administrador da casa. Aguarde a liberação."
+		sendTelegramNotification(token, userChatID, msg)
+		return
+	}
+	if userStatus == "blocked" {
+		msg := "⛔ <b>Acesso Bloqueado</b>\n\nSeu acesso a este bot foi bloqueado pelo administrador."
 		sendTelegramNotification(token, userChatID, msg)
 		return
 	}
 
+	// 4. SE FOR O ADMINISTRADOR - PROCESSAR COMANDOS DE ADMINISTRAÇÃO
+	isAdmin := (userStatus == "admin" || userChatID == adminChatID)
+	if isAdmin {
+		if strings.HasPrefix(text, "/aprovar") {
+			parts := strings.Fields(text)
+			if len(parts) < 2 {
+				sendTelegramNotification(token, userChatID, "⚠️ <b>Uso:</b> <code>/aprovar &lt;chat_id&gt; [Nome]</code>\nExemplo: <code>/aprovar 123456789 Claudia</code>")
+				return
+			}
+			targetCID := parts[1]
+			customName := ""
+			if len(parts) >= 3 {
+				customName = strings.Join(parts[2:], " ")
+			}
+
+			settingsMu.Lock()
+			targetU, found := currentSettings.TelegramUsers[targetCID]
+			if !found {
+				targetU = &TelegramUser{
+					ChatID:      targetCID,
+					Name:        customName,
+					Status:      "allowed",
+					RequestedAt: nowStr,
+					LastSeen:    nowStr,
+				}
+				currentSettings.TelegramUsers[targetCID] = targetU
+			} else {
+				targetU.Status = "allowed"
+				if customName != "" {
+					targetU.Name = customName
+				}
+			}
+			settingsMu.Unlock()
+			_ = saveAppSettings(currentSettings)
+
+			// Remove notificação persistente do HA
+			callHomeAssistantService("persistent_notification", "dismiss", map[string]string{
+				"notification_id": fmt.Sprintf("telegram_req_%s", targetCID),
+			})
+
+			// Confirma para o admin
+			displayName := targetU.Name
+			if displayName == "" {
+				displayName = targetCID
+			}
+			adminConfirm := fmt.Sprintf("✅ <b>Usuário Aprovado com Sucesso!</b>\n\n👤 <b>Nome:</b> %s\n🆔 <b>Chat ID:</b> <code>%s</code>\nStatus: 🟢 Autorizado", displayName, targetCID)
+			sendTelegramNotification(token, userChatID, adminConfirm)
+
+			// Notifica o usuário aprovado
+			userWelcome := fmt.Sprintf("🎉 <b>Parabéns! Seu acesso foi liberado!</b>\n\nO administrador da casa aprovou seu acesso ao assistente <b>%s</b>.\nDigite /status para ver os dispositivos ou converse comigo normalmente!", botName)
+			sendTelegramNotification(token, targetCID, userWelcome)
+			return
+		}
+
+		if strings.HasPrefix(text, "/bloquear") {
+			parts := strings.Fields(text)
+			if len(parts) < 2 {
+				sendTelegramNotification(token, userChatID, "⚠️ <b>Uso:</b> <code>/bloquear &lt;chat_id&gt;</code>")
+				return
+			}
+			targetCID := parts[1]
+			if targetCID == adminChatID {
+				sendTelegramNotification(token, userChatID, "❌ Você não pode bloquear o administrador principal.")
+				return
+			}
+
+			settingsMu.Lock()
+			if targetU, found := currentSettings.TelegramUsers[targetCID]; found {
+				targetU.Status = "blocked"
+			} else {
+				currentSettings.TelegramUsers[targetCID] = &TelegramUser{
+					ChatID: targetCID,
+					Status: "blocked",
+				}
+			}
+			settingsMu.Unlock()
+			_ = saveAppSettings(currentSettings)
+
+			sendTelegramNotification(token, userChatID, fmt.Sprintf("⛔ <b>Usuário Bloqueado:</b> Chat ID <code>%s</code> agora está proibido de usar o bot.", targetCID))
+			sendTelegramNotification(token, targetCID, "⛔ Seu acesso a este bot foi revogado pelo administrador.")
+			return
+		}
+
+		if strings.HasPrefix(text, "/usuarios") {
+			settingsMu.RLock()
+			users := currentSettings.TelegramUsers
+			settingsMu.RUnlock()
+
+			var sb strings.Builder
+			sb.WriteString("👥 <b>Usuários do Telegram Cadastrados:</b>\n\n")
+			for cid, usr := range users {
+				tag := "🟢 Autorizado"
+				if usr.Status == "admin" {
+					tag = "👑 Admin"
+				} else if usr.Status == "pending" {
+					tag = "🟡 Pendente (/aprovar " + cid + ")"
+				} else if usr.Status == "blocked" {
+					tag = "🔴 Bloqueado"
+				}
+				nameStr := usr.Name
+				if nameStr == "" {
+					nameStr = "Sem nome"
+				}
+				sb.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s</code>): %s\n", nameStr, cid, tag))
+			}
+			sendTelegramNotification(token, userChatID, sb.String())
+			return
+		}
+	}
+
+	// 5. COMANDOS GERAIS PARA USUÁRIOS AUTORIZADOS
 	switch {
 	case strings.HasPrefix(text, "/start"):
-		msg := fmt.Sprintf("🤖 <b>Olá, %s! Eu sou o %s.</b>\n\nEstou pronto para gerenciar sua casa e manter seu acesso P2P sempre online.\n\n<b>Comandos disponíveis:</b>\n/status - Dispositivos ativos e estado do túnel\n/tunnel - Links diretos Cloudflare e Peer ID\n/ajuda - Como conversar comigo", userName, botName)
+		msg := fmt.Sprintf("🤖 <b>Olá, %s! Eu sou o %s.</b>\n\nEstou pronto para gerenciar sua casa e manter seu acesso seguro.\n\n<b>Comandos disponíveis:</b>\n/status - Dispositivos ativos e túnel\n/tunnel - Link direto HTTPS e Peer ID\n/ajuda - Como conversar comigo", userName, botName)
+		if isAdmin {
+			msg += "\n\n<b>Comandos de Administrador:</b>\n/usuarios - Ver lista de usuários\n/aprovar &lt;id&gt; - Liberar novo usuário\n/bloquear &lt;id&gt; - Bloquear usuário"
+		}
 		sendTelegramNotification(token, userChatID, msg)
 
 	case strings.HasPrefix(text, "/tunnel"):
@@ -1045,7 +1266,7 @@ func loadOrCreateKey(path string) (crypto.PrivKey, error) {
 }
 
 // ==========================================================================
-// SERVIDOR WEB INGRESS COM MODAL DE CONFIGURAÇÃO & WIZARD
+// SERVIDOR WEB INGRESS COM GESTÃO DE USUÁRIOS & ATALHOS DE NOTIFICAÇÃO
 // ==========================================================================
 
 func startIngressServer(port string, host host.Host, hostID string) {
@@ -1075,23 +1296,36 @@ func startIngressServer(port string, host host.Host, hostID string) {
 			fullHttpsUrl = fmt.Sprintf("%s/?psk=%s", stats.HttpsUrl, url.QueryEscape(s.SecretPSK))
 		}
 
+		pendingCount := 0
+		allowedCount := 0
+		for _, u := range s.TelegramUsers {
+			if u.Status == "pending" {
+				pendingCount++
+			} else if u.Status == "allowed" || u.Status == "admin" {
+				allowedCount++
+			}
+		}
+
 		data := map[string]interface{}{
-			"active_streams":   atomic.LoadInt64(&stats.ActiveStreams),
-			"total_streams":    atomic.LoadInt64(&stats.TotalStreams),
-			"rejected_streams": atomic.LoadInt64(&stats.RejectedStreams),
-			"total_bytes_in":   atomic.LoadInt64(&stats.TotalBytesIn),
-			"total_bytes_out":  atomic.LoadInt64(&stats.TotalBytesOut),
-			"https_url":        stats.HttpsUrl,
-			"https_auth_url":   fullHttpsUrl,
-			"peer_id":          hostID,
-			"devices":          devs,
-			"history":          stats.History,
-			"client_reports":   reports,
-			"uptime":           time.Since(stats.StartedAt).Round(time.Second).String(),
-			"bot_name":         s.BotName,
-			"telegram_active":  s.EnableTelegram && s.TelegramBotToken != "",
-			"ai_active":        s.EnableAI && s.GeminiAPIKey != "",
-			"wizard_completed": s.WizardCompleted,
+			"active_streams":       atomic.LoadInt64(&stats.ActiveStreams),
+			"total_streams":        atomic.LoadInt64(&stats.TotalStreams),
+			"rejected_streams":     atomic.LoadInt64(&stats.RejectedStreams),
+			"total_bytes_in":       atomic.LoadInt64(&stats.TotalBytesIn),
+			"total_bytes_out":      atomic.LoadInt64(&stats.TotalBytesOut),
+			"https_url":            stats.HttpsUrl,
+			"https_auth_url":       fullHttpsUrl,
+			"peer_id":              hostID,
+			"devices":              devs,
+			"history":              stats.History,
+			"client_reports":       reports,
+			"uptime":               time.Since(stats.StartedAt).Round(time.Second).String(),
+			"bot_name":             s.BotName,
+			"telegram_active":      s.EnableTelegram && s.TelegramBotToken != "",
+			"ai_active":            s.EnableAI && s.GeminiAPIKey != "",
+			"wizard_completed":     s.WizardCompleted,
+			"telegram_users":       s.TelegramUsers,
+			"pending_users_count":  pendingCount,
+			"allowed_users_count":  allowedCount,
 		}
 		json.NewEncoder(w).Encode(data)
 	})
@@ -1130,7 +1364,7 @@ func startIngressServer(port string, host host.Host, hostID string) {
 				"has_gemini_key":         s.GeminiAPIKey != "",
 				"gemini_models_priority": s.GeminiModelsPriority,
 				"wizard_completed":       s.WizardCompleted,
-				"known_users":            s.KnownUsers,
+				"telegram_users":         s.TelegramUsers,
 			}
 			json.NewEncoder(w).Encode(resp)
 			return
@@ -1188,6 +1422,111 @@ func startIngressServer(port string, host host.Host, hostID string) {
 			return
 		}
 		http.Error(w, `{"error":"Método não permitido"}`, http.StatusMethodNotAllowed)
+	})
+
+	// Gerenciamento de Usuários (Aprovar, Bloquear, Remover)
+	mux.HandleFunc("/api/users/action", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"Apenas método POST é suportado"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			ChatID string `json:"chat_id"`
+			Action string `json:"action"` // "approve", "block", "delete"
+			Name   string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"JSON inválido"}`, http.StatusBadRequest)
+			return
+		}
+
+		req.ChatID = strings.TrimSpace(req.ChatID)
+		if req.ChatID == "" {
+			http.Error(w, `{"error":"chat_id obrigatório"}`, http.StatusBadRequest)
+			return
+		}
+
+		settingsMu.Lock()
+		if currentSettings.TelegramUsers == nil {
+			currentSettings.TelegramUsers = make(map[string]*TelegramUser)
+		}
+		u, found := currentSettings.TelegramUsers[req.ChatID]
+		if !found && req.Action != "delete" {
+			u = &TelegramUser{
+				ChatID:      req.ChatID,
+				Name:        req.Name,
+				Status:      "pending",
+				RequestedAt: time.Now().Format("02/01 15:04"),
+				LastSeen:    time.Now().Format("02/01 15:04"),
+			}
+			currentSettings.TelegramUsers[req.ChatID] = u
+		}
+
+		token := currentSettings.TelegramBotToken
+		botName := currentSettings.BotName
+
+		if req.Action == "approve" {
+			if u != nil {
+				u.Status = "allowed"
+				if req.Name != "" {
+					u.Name = req.Name
+				}
+			}
+			callHomeAssistantService("persistent_notification", "dismiss", map[string]string{
+				"notification_id": fmt.Sprintf("telegram_req_%s", req.ChatID),
+			})
+			sendTelegramNotification(token, req.ChatID, fmt.Sprintf("🎉 <b>Parabéns! Seu acesso foi liberado!</b>\n\nO administrador aprovou seu acesso ao assistente <b>%s</b>. Digite /start para começar!", botName))
+		} else if req.Action == "block" {
+			if u != nil {
+				u.Status = "blocked"
+			}
+			sendTelegramNotification(token, req.ChatID, "⛔ Seu acesso a este bot foi revogado pelo administrador.")
+		} else if req.Action == "delete" {
+			delete(currentSettings.TelegramUsers, req.ChatID)
+		}
+
+		updatedSettings := currentSettings
+		settingsMu.Unlock()
+
+		_ = saveAppSettings(updatedSettings)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok",
+			"users":  updatedSettings.TelegramUsers,
+		})
+	})
+
+	// Botão de Teste de Notificação
+	mux.HandleFunc("/api/test_notification", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"Apenas método POST é suportado"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		settingsMu.RLock()
+		token := currentSettings.TelegramBotToken
+		adminChatID := currentSettings.TelegramChatID
+		botName := currentSettings.BotName
+		settingsMu.RUnlock()
+
+		if token == "" || adminChatID == "" {
+			http.Error(w, `{"error":"Configure e salve o token e o chat ID antes de testar"}`, http.StatusBadRequest)
+			return
+		}
+
+		testMsg := fmt.Sprintf("🧪 <b>Teste de Notificação Bem-Sucedido!</b>\n\nO assistente <b>%s</b> está conectado e comunicando normalmente com o Home Assistant!\n🕒 Hora: %s", botName, time.Now().Format("15:04:05"))
+		sendTelegramNotification(token, adminChatID, testMsg)
+
+		callHomeAssistantService("persistent_notification", "create", map[string]string{
+			"title":           "🧪 Teste de Notificação Telegram",
+			"message":         "Notificação de teste disparada com sucesso para o Administrador!",
+			"notification_id": "telegram_test_success",
+		})
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "ok",
+			"message": "Notificação de teste enviada com sucesso ao Telegram e ao Home Assistant!",
+		})
 	})
 
 	// Endpoints REST de Notificação para Automações e rest_command
@@ -1281,23 +1620,24 @@ body { background: var(--bg-primary); color: var(--text-main); padding: 20px; li
 .pill { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 6px; }
 .pill-green { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
 .pill-yellow { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+.pill-red { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
 .pill-gray { background: rgba(156, 163, 175, 0.15); color: #9ca3af; border: 1px solid rgba(156, 163, 175, 0.3); }
 
-.header-actions { display: flex; gap: 10px; }
+.header-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .btn { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s; }
 .btn:hover { background: #374151; border-color: #4b5563; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { background: var(--accent-hover); }
+.btn-success { background: #059669; border-color: #059669; color: #fff; }
+.btn-success:hover { background: #047857; }
+.btn-danger { background: #dc2626; border-color: #dc2626; color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+.btn-sm { padding: 4px 8px; font-size: 11px; border-radius: 6px; }
 
 /* GRID */
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-bottom: 25px; }
 .card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
 .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; }
-
-/* METRICS */
-.metric-box { background: var(--bg-card); border-radius: 8px; padding: 12px; border: 1px solid rgba(255,255,255,0.05); }
-.metric-val { font-size: 20px; font-weight: 700; color: #fff; }
-.metric-lbl { font-size: 12px; color: var(--text-muted); }
 
 /* QR BOX */
 .qr-container { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
@@ -1343,6 +1683,7 @@ td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
     </div>
 
     <div class="header-actions">
+      <button class="btn btn-success" onclick="testTelegramNotification()">🔔 Testar Notificação</button>
       <button class="btn btn-primary" onclick="openSettingsModal()">⚙️ Configurações & Bot</button>
       <a href="{{DIRECT_DOWNLOAD_URL}}" class="btn">📱 Baixar APK Oficial</a>
       <button class="btn" onclick="toggleLogs()">📄 Logs</button>
@@ -1399,6 +1740,9 @@ td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
         Ação: <code>Disparar evento</code><br/>
         Tipo do evento: <code>p2p_telegram</code><br/>
         Dados do evento: <code>message: "Luz ligada!"</code>
+        <div style="margin-top:8px;">
+          <button class="btn btn-sm btn-primary" onclick="copyEventYaml()">📋 Copiar Código YAML da Ação</button>
+        </div>
       </div>
 
       <div class="tip-box" style="margin-top:0;">
@@ -1406,6 +1750,35 @@ td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
         URL: <code>http://local-ha-p2p-tunnel:8099/api/send_telegram</code><br/>
         Payload: <code>{"message": "Sua mensagem", "target": "admin"}</code>
       </div>
+    </div>
+  </div>
+
+  <!-- CARD DE CONTROLE DE USUÁRIOS DO TELEGRAM -->
+  <div class="card" style="margin-bottom:25px;">
+    <h2>
+      <span>👥 Controle de Usuários do Telegram</span>
+      <span id="userSummaryBadge" class="pill pill-green">0 Autorizados</span>
+    </h2>
+    <p style="font-size:12px; color:var(--text-muted); margin-bottom:15px;">
+      Apenas usuários autorizados pelo Administrador podem interagir com o bot. Quando alguém novo tentar conversar, um alerta com o Chat ID aparecerá aqui e no seu Telegram.
+    </p>
+
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Nome / Usuário</th>
+            <th>Chat ID</th>
+            <th>Solicitado em</th>
+            <th>Último Acesso</th>
+            <th style="text-align:right;">Ações do Administrador</th>
+          </tr>
+        </thead>
+        <tbody id="usersTableBody">
+          <tr><td colspan="6" style="text-align:center; color:#64748b; padding:20px;">Nenhum usuário cadastrado até o momento. Envie /start no bot para registrar o Administrador!</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -1580,6 +1953,39 @@ function saveSettings(e) {
   .catch(err => alert("Erro ao salvar: " + err));
 }
 
+function testTelegramNotification() {
+  if (!confirm("Deseja disparar uma notificação de teste para o Administrador do Telegram?")) return;
+  fetch(getEndpoint("api/test_notification"), {method: "POST"})
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === "ok") {
+        alert("✅ " + data.message);
+      } else {
+        alert("⚠️ " + (data.error || "Falha ao enviar"));
+      }
+    })
+    .catch(err => alert("Erro ao testar: " + err));
+}
+
+function copyEventYaml() {
+  const yaml = '- action: event.fire\n  data:\n    event_type: p2p_telegram\n    event_data:\n      message: "Sua mensagem aqui"\n      target: "admin"';
+  navigator.clipboard.writeText(yaml).then(() => alert("Código YAML copiado para a área de transferência!\nBasta colar nas suas automações do Home Assistant."));
+}
+
+function handleUserAction(chatId, action, userName) {
+  const promptName = (action === 'approve' && !userName) ? prompt("Nome para identificar este usuário:", "Morador") : userName;
+  fetch(getEndpoint("api/users/action"), {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({chat_id: chatId, action: action, name: promptName || ""})
+  })
+  .then(r => r.json())
+  .then(() => {
+    updateStats();
+  })
+  .catch(err => alert("Erro ao executar ação: " + err));
+}
+
 function toggleLogs() {
   const m = document.getElementById("logsModal");
   if (m.style.display === "flex") {
@@ -1645,6 +2051,58 @@ function updateStats() {
         document.getElementById("wizardBanner").style.display = "flex";
       } else {
         document.getElementById("wizardBanner").style.display = "none";
+      }
+
+      // Tabela de Usuários do Telegram
+      if (data.telegram_users && Object.keys(data.telegram_users).length > 0) {
+        let uRows = "";
+        let pending = 0;
+        let allowed = 0;
+        for (const [cid, u] of Object.entries(data.telegram_users)) {
+          let statusPill = "";
+          let actionBtns = "";
+
+          if (u.status === "admin") {
+            statusPill = '<span class="pill pill-green">👑 Administrador</span>';
+            actionBtns = '<span style="color:#64748b; font-size:11px;">Principal</span>';
+            allowed++;
+          } else if (u.status === "allowed") {
+            statusPill = '<span class="pill pill-green">🟢 Autorizado</span>';
+            actionBtns = '<button class="btn btn-sm btn-danger" onclick="handleUserAction(\'' + cid + '\', \'block\')">⛔ Bloquear</button> ' +
+                         '<button class="btn btn-sm" onclick="handleUserAction(\'' + cid + '\', \'delete\')">🗑️</button>';
+            allowed++;
+          } else if (u.status === "pending") {
+            statusPill = '<span class="pill pill-yellow">🟡 Pendente de Aprovação</span>';
+            actionBtns = '<button class="btn btn-sm btn-success" onclick="handleUserAction(\'' + cid + '\', \'approve\', \'' + (u.name || '') + '\')">✅ Aprovar</button> ' +
+                         '<button class="btn btn-sm btn-danger" onclick="handleUserAction(\'' + cid + '\', \'block\')">⛔ Bloquear</button>';
+            pending++;
+          } else if (u.status === "blocked") {
+            statusPill = '<span class="pill pill-red">🔴 Bloqueado</span>';
+            actionBtns = '<button class="btn btn-sm btn-success" onclick="handleUserAction(\'' + cid + '\', \'approve\', \'' + (u.name || '') + '\')">Desbloquear</button> ' +
+                         '<button class="btn btn-sm" onclick="handleUserAction(\'' + cid + '\', \'delete\')">🗑️</button>';
+          }
+
+          const uname = u.username ? ' (@' + u.username + ')' : '';
+          const displayName = (u.name || 'Sem nome') + uname;
+
+          uRows += '<tr>' +
+            '<td>' + statusPill + '</td>' +
+            '<td><b>' + displayName + '</b></td>' +
+            '<td><code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px;">' + cid + '</code></td>' +
+            '<td>' + (u.requested_at || '-') + '</td>' +
+            '<td>' + (u.last_seen || '-') + '</td>' +
+            '<td style="text-align:right;">' + actionBtns + '</td>' +
+          '</tr>';
+        }
+        document.getElementById("usersTableBody").innerHTML = uRows;
+
+        if (pending > 0) {
+          document.getElementById("userSummaryBadge").className = "pill pill-yellow";
+          document.getElementById("userSummaryBadge").innerText = pending + " Pendente(s) • " + allowed + " Autorizado(s)";
+        } else {
+          document.getElementById("userSummaryBadge").className = "pill pill-green";
+          document.getElementById("userSummaryBadge").innerText = allowed + " Usuário(s) Autorizado(s)";
+        }
       }
 
       // Dispositivos P2P
