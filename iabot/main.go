@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,7 +21,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.2.0"
+	AppVersion       = "1.3.0"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -37,24 +40,25 @@ type TelegramUser struct {
 
 type LogEntry struct {
 	Timestamp string `json:"timestamp"`
-	Type      string `json:"type"` // "INFO", "WARN", "MSG", "IA", "HA"
+	Type      string `json:"type"` // "INFO", "WARN", "MSG", "IA", "HA", "VOICE"
 	Message   string `json:"message"`
 }
 
 type IABoTSettings struct {
-	TelegramBotToken string                   `json:"telegram_bot_token"`
-	AdminChatID      string                   `json:"admin_chat_id"`
-	BotName          string                   `json:"bot_name"`
-	EnableAI         bool                     `json:"enable_ai"`
-	GeminiAPIKey     string                   `json:"gemini_api_key"`
-	GeminiModel      string                   `json:"gemini_model"`
-	ModelsPriority   string                   `json:"models_priority"`
-	LastModelUsed    string                   `json:"last_model_used"`
-	SystemPrompt     string                   `json:"system_prompt"`
-	TelegramUsers    map[string]*TelegramUser `json:"telegram_users"`
-	MessagesSent     int64                    `json:"messages_sent"`
-	MessagesReceived int64                    `json:"messages_received"`
-	AITokensUsed     int64                    `json:"ai_tokens_used"`
+	TelegramBotToken  string                   `json:"telegram_bot_token"`
+	AdminChatID       string                   `json:"admin_chat_id"`
+	BotName           string                   `json:"bot_name"`
+	EnableAI          bool                     `json:"enable_ai"`
+	GeminiAPIKey      string                   `json:"gemini_api_key"`
+	GeminiModel       string                   `json:"gemini_model"`
+	ModelsPriority    string                   `json:"models_priority"`
+	LastModelUsed     string                   `json:"last_model_used"`
+	VoiceResponseMode string                   `json:"voice_response_mode"` // "auto", "always", "never"
+	SystemPrompt      string                   `json:"system_prompt"`
+	TelegramUsers     map[string]*TelegramUser `json:"telegram_users"`
+	MessagesSent      int64                    `json:"messages_sent"`
+	MessagesReceived  int64                    `json:"messages_received"`
+	AITokensUsed      int64                    `json:"ai_tokens_used"`
 }
 
 var (
@@ -66,7 +70,7 @@ var (
 	chatHistoryMu sync.RWMutex
 	chatHistory   = make(map[string][]GeminiContent)
 
-	httpClient = &http.Client{Timeout: 35 * time.Second}
+	httpClient = &http.Client{Timeout: 45 * time.Second}
 
 	defaultModelsPriority = []string{
 		"gemini-3.5-flash-lite",
@@ -95,12 +99,13 @@ func loadSettings() {
 	defer settingsMu.Unlock()
 
 	settings = IABoTSettings{
-		BotName:        "Herbie",
-		EnableAI:       true,
-		GeminiModel:    "gemini-3.5-flash-lite",
-		ModelsPriority: "gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.6-flash",
-		SystemPrompt:   "Você é o Herbie (ou JARVIS), o assistente inteligente da casa de Jhonatan e Claudia. Você é prestativo, rápido, fala português brasileiro natural com emojis moderados e tem controle direto dos dispositivos da casa.",
-		TelegramUsers:  make(map[string]*TelegramUser),
+		BotName:           "Herbie",
+		EnableAI:          true,
+		GeminiModel:       "gemini-3.5-flash-lite",
+		ModelsPriority:    "gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.6-flash",
+		VoiceResponseMode: "auto",
+		SystemPrompt:      "Você é o assistente inteligente da casa de Jhonatan e Claudia. Você é amigável, direto, prestativo e fala português do Brasil com naturalidade. Você tem controle direto dos dispositivos da casa.",
+		TelegramUsers:     make(map[string]*TelegramUser),
 	}
 
 	data, err := os.ReadFile(SettingsFilePath)
@@ -118,6 +123,10 @@ func loadSettings() {
 	if settings.BotName == "" {
 		settings.BotName = "Herbie"
 	}
+	if settings.VoiceResponseMode == "" {
+		settings.VoiceResponseMode = "auto"
+	}
+
 	// Migração obrigatória: garantir que o modelo padrão seja 3.5-flash-lite
 	if strings.Contains(settings.GeminiModel, "1.5") || strings.Contains(settings.GeminiModel, "2.5") || settings.GeminiModel == "" {
 		settings.GeminiModel = "gemini-3.5-flash-lite"
@@ -171,7 +180,7 @@ func getHAEntities() []HAEntityState {
 func callHAEntityService(domain, service, entityID string) error {
 	token := os.Getenv("SUPERVISOR_TOKEN")
 	if token == "" {
-		return fmt.Errorf("sem permissão SUPERVISOR_TOKEN")
+		return fmt.Errorf("sem permissao SUPERVISOR_TOKEN")
 	}
 	url := fmt.Sprintf("http://supervisor/core/api/services/%s/%s", domain, service)
 	body, _ := json.Marshal(map[string]string{"entity_id": entityID})
@@ -231,7 +240,6 @@ func tryControlDevice(text string) (string, bool) {
 		}
 		id := strings.ToLower(e.EntityID)
 
-		// Busca exata ou por substring
 		if strings.EqualFold(fn, targetName) || strings.EqualFold(id, targetName) || strings.Contains(fn, targetName) || strings.Contains(id, targetName) {
 			matchedEntity = &e
 			break
@@ -334,7 +342,7 @@ func updateSupervisorSensor() {
 }
 
 // ==========================================
-// Telegram API
+// Telegram API & Audio Voice Engine
 // ==========================================
 
 type InlineKeyboardButton struct {
@@ -379,6 +387,114 @@ func sendTelegramMessage(token, chatID, text string, markup *InlineKeyboardMarku
 	return nil
 }
 
+func generateTTSAudio(text string) ([]byte, error) {
+	// Limpa tags HTML
+	cleanText := strings.ReplaceAll(text, "<b>", "")
+	cleanText = strings.ReplaceAll(cleanText, "</b>", "")
+	cleanText = strings.ReplaceAll(cleanText, "<code>", "")
+	cleanText = strings.ReplaceAll(cleanText, "</code>", "")
+	cleanText = strings.ReplaceAll(cleanText, "<i>", "")
+	cleanText = strings.ReplaceAll(cleanText, "</i>", "")
+	cleanText = strings.TrimSpace(cleanText)
+
+	if len(cleanText) > 200 {
+		cleanText = cleanText[:200]
+	}
+
+	ttsURL := fmt.Sprintf("https://translate.google.com/translate_tts?ie=UTF-8&tl=pt-BR&client=tw-ob&q=%s", url.QueryEscape(cleanText))
+	req, err := http.NewRequest("GET", ttsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tts status %d", resp.StatusCode)
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+func sendTelegramVoice(token, chatID string, audioBytes []byte, caption string) error {
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+
+	_ = w.WriteField("chat_id", chatID)
+	if caption != "" {
+		_ = w.WriteField("caption", caption)
+	}
+
+	part, err := w.CreateFormFile("voice", "voice.mp3")
+	if err != nil {
+		return err
+	}
+	_, err = part.Write(audioBytes)
+	if err != nil {
+		return err
+	}
+
+	err = w.Close()
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendVoice", token)
+	req, err := http.NewRequest("POST", url, &b)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram voice status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	settingsMu.Lock()
+	settings.MessagesSent++
+	settingsMu.Unlock()
+	return nil
+}
+
+func downloadTelegramFile(token, fileID string) ([]byte, error) {
+	urlPath := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", token, fileID)
+	resp, err := httpClient.Get(urlPath)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var getFileResp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&getFileResp); err != nil {
+		return nil, err
+	}
+
+	downloadURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", token, getFileResp.Result.FilePath)
+	fileResp, err := httpClient.Get(downloadURL)
+	if err != nil {
+		return nil, err
+	}
+	defer fileResp.Body.Close()
+
+	return io.ReadAll(fileResp.Body)
+}
+
 func answerCallbackQuery(token, callbackID, text string) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/answerCallbackQuery", token)
 	payload, _ := json.Marshal(map[string]string{
@@ -392,11 +508,17 @@ func answerCallbackQuery(token, callbackID, text string) {
 }
 
 // ==========================================
-// Gemini AI Engine com Fila Invisível Instantânea
+// Gemini AI Engine com Multimodal e Fallback Silencioso
 // ==========================================
 
+type InlineDataPart struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
 type GeminiPart struct {
-	Text string `json:"text"`
+	Text       string          `json:"text,omitempty"`
+	InlineData *InlineDataPart `json:"inlineData,omitempty"`
 }
 
 type GeminiContent struct {
@@ -450,7 +572,7 @@ func getModelsToTry(selectedModel, priorityStr string) []string {
 	return models
 }
 
-func callGeminiAI(userChatID, userPrompt string) (string, error) {
+func callGeminiAI(userChatID, userPrompt string, audioBytes []byte) (string, error) {
 	settingsMu.RLock()
 	apiKey := settings.GeminiAPIKey
 	selectedModel := settings.GeminiModel
@@ -462,11 +584,26 @@ func callGeminiAI(userChatID, userPrompt string) (string, error) {
 		return "🤖 A IA está desativada ou a chave do Gemini ainda não foi configurada no painel do IABoT.", nil
 	}
 
+	var parts []GeminiPart
+	if len(audioBytes) > 0 {
+		parts = append(parts, GeminiPart{
+			InlineData: &InlineDataPart{
+				MimeType: "audio/ogg",
+				Data:     base64.StdEncoding.EncodeToString(audioBytes),
+			},
+		})
+		parts = append(parts, GeminiPart{
+			Text: "Transcreva este áudio do usuário e atenda prestativo ao pedido sobre a casa ou tire a dúvida em português.",
+		})
+	} else {
+		parts = append(parts, GeminiPart{Text: userPrompt})
+	}
+
 	chatHistoryMu.Lock()
 	history := chatHistory[userChatID]
 	history = append(history, GeminiContent{
 		Role:  "user",
-		Parts: []GeminiPart{{Text: userPrompt}},
+		Parts: parts,
 	})
 	if len(history) > 12 {
 		history = history[len(history)-12:]
@@ -493,7 +630,7 @@ func callGeminiAI(userChatID, userPrompt string) (string, error) {
 		resp, err := httpClient.Post(url, "application/json", bytes.NewBuffer(payload))
 		if err != nil {
 			lastErr = err
-			addLog("WARN", fmt.Sprintf("Modelo %s falhou na rede (%v). Alternando imediatamente para o próximo...", modelName, err))
+			addLog("WARN", fmt.Sprintf("Modelo %s erro de rede (%v). Alternando imediatamente...", modelName, err))
 			continue
 		}
 
@@ -503,13 +640,13 @@ func callGeminiAI(userChatID, userPrompt string) (string, error) {
 
 		if err != nil {
 			lastErr = err
-			addLog("WARN", fmt.Sprintf("Modelo %s erro de decode (%v). Alternando imediatamente para o próximo...", modelName, err))
+			addLog("WARN", fmt.Sprintf("Modelo %s erro de decode (%v). Alternando imediatamente...", modelName, err))
 			continue
 		}
 
 		if geminiResp.Error != nil {
 			lastErr = fmt.Errorf("%s", geminiResp.Error.Message)
-			addLog("WARN", fmt.Sprintf("Modelo %s ocupado/sem cota (%s). Alternando instantaneamente...", modelName, geminiResp.Error.Message))
+			addLog("WARN", fmt.Sprintf("Modelo %s cota/erro (%s). Alternando instantaneamente...", modelName, geminiResp.Error.Message))
 			continue
 		}
 
@@ -534,12 +671,18 @@ func callGeminiAI(userChatID, userPrompt string) (string, error) {
 	}
 
 	addLog("WARN", fmt.Sprintf("Todos os modelos da fila falharam: %v", lastErr))
-	return fmt.Sprintf("⚠️ Todos os modelos da fila (%s) estão ocupados no momento. Aguarde alguns minutos!", strings.Join(modelsToTry, ", ")), nil
+	return fmt.Sprintf("⚠️ Todos os modelos da fila (%s) estão ocupados no momento. Aguarde alguns instantes!", strings.Join(modelsToTry, ", ")), nil
 }
 
 // ==========================================
 // Telegram Polling
 // ==========================================
+
+type TelegramVoice struct {
+	FileID   string `json:"file_id"`
+	Duration int    `json:"duration"`
+	MimeType string `json:"mime_type"`
+}
 
 type TelegramUpdate struct {
 	UpdateID int `json:"update_id"`
@@ -555,8 +698,9 @@ type TelegramUpdate struct {
 			ID   int64  `json:"id"`
 			Type string `json:"type"`
 		} `json:"chat"`
-		Text string `json:"text"`
-		Date int64  `json:"date"`
+		Text  string         `json:"text"`
+		Voice *TelegramVoice `json:"voice"`
+		Date  int64          `json:"date"`
 	} `json:"message"`
 	CallbackQuery *struct {
 		ID   string `json:"id"`
@@ -616,7 +760,7 @@ func startTelegramPolling(ctx context.Context) {
 				continue
 			}
 
-			if up.Message != nil && up.Message.Text != "" {
+			if up.Message != nil && (up.Message.Text != "" || up.Message.Voice != nil) {
 				handleIncomingMessage(token, up.Message)
 			}
 		}
@@ -656,9 +800,7 @@ func handleCallbackQuery(token string, cb *struct {
 				_ = saveSettings()
 				answerCallbackQuery(token, cb.ID, fmt.Sprintf("✅ %s foi autorizado!", u.Name))
 				sendTelegramMessage(token, adminID, fmt.Sprintf("✅ <b>Usuário Autorizado com Sucesso:</b> %s (<code>%s</code>)", html.EscapeString(u.Name), targetCID), nil)
-				sendTelegramMessage(token, targetCID, "🎉 <b>Acesso Concedido!</b>
-
-O Administrador aprovou seu acesso. Agora você pode conversar com o assistente da casa!", nil)
+				sendTelegramMessage(token, targetCID, "🎉 <b>Acesso Concedido!</b>\n\nO Administrador aprovou seu acesso. Agora você pode conversar com o assistente da casa!", nil)
 				addLog("INFO", fmt.Sprintf("Usuário %s (%s) aprovado pelo Admin", u.Name, targetCID))
 				updateSupervisorSensor()
 				return
@@ -690,8 +832,9 @@ func handleIncomingMessage(token string, msg *struct {
 		ID   int64  `json:"id"`
 		Type string `json:"type"`
 	} `json:"chat"`
-	Text string `json:"text"`
-	Date int64  `json:"date"`
+	Text  string         `json:"text"`
+	Voice *TelegramVoice `json:"voice"`
+	Date  int64          `json:"date"`
 }) {
 	userChatID := fmt.Sprintf("%d", msg.Chat.ID)
 	userName := strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName)
@@ -702,6 +845,7 @@ func handleIncomingMessage(token string, msg *struct {
 		userName = fmt.Sprintf("Usuário %s", userChatID)
 	}
 
+	isVoiceInput := (msg.Voice != nil)
 	text := strings.TrimSpace(msg.Text)
 
 	settingsMu.Lock()
@@ -709,6 +853,7 @@ func handleIncomingMessage(token string, msg *struct {
 	adminChatID := settings.AdminChatID
 	botName := settings.BotName
 	enableAI := settings.EnableAI
+	voiceMode := settings.VoiceResponseMode
 
 	// Auto-claim Admin on first message if none configured
 	if adminChatID == "" {
@@ -725,17 +870,7 @@ func handleIncomingMessage(token string, msg *struct {
 		settingsMu.Unlock()
 		_ = saveSettings()
 		addLog("INFO", fmt.Sprintf("Novo Administrador configurado: %s (%s)", userName, userChatID))
-		welcomeAdmin := fmt.Sprintf("👑 <b>Bem-vindo, Administrador!</b>
-
-Você é o administrador principal do <b>%s</b>.
-
-Comandos disponíveis:
-• <code>/status</code> - Ver status e luzes ligadas
-• <code>/usuarios</code> - Listar usuários autorizados
-• <code>/aprovar &lt;id&gt; [Nome]</code> - Autorizar usuário
-• <code>/bloquear &lt;id&gt;</code> - Bloquear usuário
-
-💡 Você também pode dizer <i>"ligar astronauta"</i> ou <i>"apagar luz da sala"</i> diretamente!", botName)
+		welcomeAdmin := fmt.Sprintf("👑 <b>Bem-vindo, Administrador!</b>\n\nVocê é o administrador principal do <b>%s</b>.\n\nComandos disponíveis:\n• <code>/status</code> - Ver status e luzes ligadas\n• <code>/usuarios</code> - Listar usuários autorizados\n• <code>/aprovar &lt;id&gt; [Nome]</code> - Autorizar usuário\n• <code>/bloquear &lt;id&gt;</code> - Bloquear usuário\n\n💡 Você também pode dizer ou mandar áudio com <i>\"ligar astronauta\"</i> ou <i>\"apagar ledthor\"</i>!", botName)
 		sendTelegramMessage(token, userChatID, welcomeAdmin, nil)
 		updateSupervisorSensor()
 		return
@@ -743,7 +878,6 @@ Comandos disponíveis:
 
 	user, exists := settings.TelegramUsers[userChatID]
 	if !exists {
-		// New user requesting access
 		user = &TelegramUser{
 			ChatID:    userChatID,
 			Name:      userName,
@@ -758,19 +892,11 @@ Comandos disponíveis:
 
 		addLog("WARN", fmt.Sprintf("Nova solicitação de acesso: %s (%s)", userName, userChatID))
 
-		pendingMsg := fmt.Sprintf("🔒 <b>Acesso Pendente</b>
-
-Olá <b>%s</b>! Este bot é privado da residência.
-Sua solicitação de acesso foi enviada ao administrador.", html.EscapeString(userName))
+		pendingMsg := fmt.Sprintf("🔒 <b>Acesso Pendente</b>\n\nOlá <b>%s</b>! Este bot é privado da residência.\nSua solicitação de acesso foi enviada ao administrador.", html.EscapeString(userName))
 		sendTelegramMessage(token, userChatID, pendingMsg, nil)
 
-		adminAlert := fmt.Sprintf("🚨 <b>Nova Solicitação de Acesso ao %s!</b>
-
-<b>Nome:</b> %s
-<b>Chat ID:</b> <code>%s</code>
-<b>Username:</b> @%s
-<b>Mensagem:</b> <i>"%s"</i>",
-			botName, html.EscapeString(userName), userChatID, html.EscapeString(msg.From.Username), html.EscapeString(text))
+		adminAlert := fmt.Sprintf("🚨 <b>Nova Solicitação de Acesso ao %s!</b>\n\n<b>Nome:</b> %s\n<b>Chat ID:</b> <code>%s</code>\n<b>Username:</b> @%s",
+			botName, html.EscapeString(userName), userChatID, html.EscapeString(msg.From.Username))
 
 		markup := &InlineKeyboardMarkup{
 			InlineKeyboard: [][]InlineKeyboardButton{
@@ -842,8 +968,7 @@ Sua solicitação de acesso foi enviada ao administrador.", html.EscapeString(us
 		_ = saveSettings()
 
 		sendTelegramMessage(token, userChatID, fmt.Sprintf("✅ Usuário <code>%s</code> aprovado com sucesso!", targetCID), nil)
-		sendTelegramMessage(token, targetCID, "🎉 <b>Acesso Concedido!</b>
-O Administrador aprovou seu acesso. Agora você pode conversar com o bot!", nil)
+		sendTelegramMessage(token, targetCID, "🎉 <b>Acesso Concedido!</b>\nO Administrador aprovou seu acesso. Agora você pode conversar com o bot!", nil)
 		updateSupervisorSensor()
 		return
 	}
@@ -875,9 +1000,7 @@ O Administrador aprovou seu acesso. Agora você pode conversar com o bot!", nil)
 	if isAdmin && text == "/usuarios" {
 		settingsMu.RLock()
 		var sb strings.Builder
-		sb.WriteString("👥 <b>Usuários Registrados:</b>
-
-")
+		sb.WriteString("👥 <b>Usuários Registrados:</b>\n\n")
 		for cid, u := range settings.TelegramUsers {
 			icon := "👤"
 			if u.Status == "admin" {
@@ -889,10 +1012,7 @@ O Administrador aprovou seu acesso. Agora você pode conversar com o bot!", nil)
 			} else if u.Status == "blocked" {
 				icon = "🚫"
 			}
-			sb.WriteString(fmt.Sprintf("%s <b>%s</b> (@%s)
-ID: <code>%s</code> | Status: %s
-
-", icon, html.EscapeString(u.Name), html.EscapeString(u.Username), cid, u.Status))
+			sb.WriteString(fmt.Sprintf("%s <b>%s</b> (@%s)\nID: <code>%s</code> | Status: %s\n\n", icon, html.EscapeString(u.Name), html.EscapeString(u.Username), cid, u.Status))
 		}
 		settingsMu.RUnlock()
 		sendTelegramMessage(token, userChatID, sb.String(), nil)
@@ -900,13 +1020,7 @@ ID: <code>%s</code> | Status: %s
 	}
 
 	if text == "/start" || text == "/ajuda" {
-		reply := fmt.Sprintf("👋 <b>Olá, %s!</b>
-
-Eu sou o <b>%s</b>, assistente inteligente da casa.
-Você pode:
-• Comandar a casa: <i>"ligar astronauta"</i>, <i>"apagar ledthor"</i>
-• Ver status: <code>/status</code>
-• Bater papo ou tirar dúvidas!", html.EscapeString(userName), botName)
+		reply := fmt.Sprintf("👋 <b>Olá, %s!</b>\n\nEu sou o <b>%s</b>, assistente inteligente da casa.\nVocê pode:\n• Comandar a casa: <i>\"ligar astronauta\"</i>, <i>\"apagar ledthor\"</i>\n• Ver status: <code>/status</code>\n• Bater papo por texto ou mensagem de voz!", html.EscapeString(userName), botName)
 		sendTelegramMessage(token, userChatID, reply, nil)
 		return
 	}
@@ -936,48 +1050,73 @@ Você pode:
 
 		var sb strings.Builder
 		if len(turnedOn) > 0 {
-			sb.WriteString("💡 <b>Ligados:</b>
-")
-			sb.WriteString(strings.Join(turnedOn, "
-"))
-			sb.WriteString("
-
-")
+			sb.WriteString("💡 <b>Ligados:</b>\n")
+			sb.WriteString(strings.Join(turnedOn, "\n"))
+			sb.WriteString("\n\n")
 		} else {
-			sb.WriteString("🌑 <b>Tudo apagado na casa.</b>
-
-")
+			sb.WriteString("🌑 <b>Tudo apagado na casa.</b>\n\n")
 		}
 
-		sb.WriteString(fmt.Sprintf("🤖 <b>Status do %s</b>
-
-• Sistema: Online
-• Modelo IA: <code>%s</code>
-• Mensagens enviadas: %d
-• Mensagens recebidas: %d
-• Hora: %s",
+		sb.WriteString(fmt.Sprintf("🤖 <b>Status do %s</b>\n\n• Sistema: Online\n• Modelo IA: <code>%s</code>\n• Mensagens enviadas: %d\n• Mensagens recebidas: %d\n• Hora: %s",
 			botName, lastModel, sent, recv, time.Now().Format("15:04:05")))
 
 		sendTelegramMessage(token, userChatID, sb.String(), nil)
 		return
 	}
 
-	// 1. Controle Direto de Dispositivos (Ligar/Desligar astronauta, ledthor, luzes)
-	if reply, handled := tryControlDevice(text); handled {
-		sendTelegramMessage(token, userChatID, reply, nil)
-		return
+	// 1. Controle Direto de Dispositivos por Texto
+	if !isVoiceInput {
+		if reply, handled := tryControlDevice(text); handled {
+			sendTelegramMessage(token, userChatID, reply, nil)
+			return
+		}
 	}
 
-	// 2. Conversação com IA Gemini (Fallback Invisível)
+	// 2. Processamento com IA Gemini (Texto ou Mensagem de Voz)
 	if enableAI {
-		addLog("MSG", fmt.Sprintf("[%s]: %s", userName, text))
-		reply, err := callGeminiAI(userChatID, text)
+		var audioBytes []byte
+		if isVoiceInput {
+			addLog("VOICE", fmt.Sprintf("Recebida mensagem de voz de [%s]", userName))
+			downloaded, err := downloadTelegramFile(token, msg.Voice.FileID)
+			if err != nil {
+				addLog("WARN", fmt.Sprintf("Falha ao baixar áudio do Telegram: %v", err))
+				sendTelegramMessage(token, userChatID, "⚠️ Não consegui baixar o áudio enviado.", nil)
+				return
+			}
+			audioBytes = downloaded
+		} else {
+			addLog("MSG", fmt.Sprintf("[%s]: %s", userName, text))
+		}
+
+		reply, err := callGeminiAI(userChatID, text, audioBytes)
 		if err != nil {
 			addLog("WARN", fmt.Sprintf("Erro IA Gemini: %v", err))
 			sendTelegramMessage(token, userChatID, fmt.Sprintf("⚠️ Erro ao consultar IA: %v", err), nil)
 			return
 		}
+
+		// Se o Gemini transcreveu e identificou controle de dispositivo:
+		if actionReply, handled := tryControlDevice(reply); handled {
+			reply = actionReply
+		}
+
 		addLog("IA", fmt.Sprintf("Resposta para [%s]: %s", userName, reply))
+
+		// Determina se deve responder por Áudio
+		shouldReplyVoice := (voiceMode == "always") || (voiceMode == "auto" && isVoiceInput)
+
+		if shouldReplyVoice {
+			audioResp, err := generateTTSAudio(reply)
+			if err == nil && len(audioResp) > 0 {
+				err = sendTelegramVoice(token, userChatID, audioResp, "")
+				if err == nil {
+					return
+				}
+				addLog("WARN", fmt.Sprintf("Falha ao enviar voz no Telegram: %v. Enviando texto.", err))
+			}
+		}
+
+		// Envio por Texto padrão
 		formattedReply := strings.ReplaceAll(reply, "**", "<b>")
 		formattedReply = strings.ReplaceAll(formattedReply, "**", "</b>")
 		err = sendTelegramMessage(token, userChatID, formattedReply, nil)
@@ -1095,20 +1234,21 @@ func handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":            "Online",
-		"version":           AppVersion,
-		"bot_name":          settings.BotName,
-		"has_token":         settings.TelegramBotToken != "",
-		"has_gemini":        settings.GeminiAPIKey != "",
-		"gemini_model":      settings.GeminiModel,
-		"models_priority":   settings.ModelsPriority,
-		"last_model_used":   settings.LastModelUsed,
-		"admin_chat_id":     settings.AdminChatID,
-		"active_users":      activeCount,
-		"pending_users":     pendingCount,
-		"messages_sent":     settings.MessagesSent,
-		"messages_received": settings.MessagesReceived,
-		"tokens_used":       settings.AITokensUsed,
+		"status":              "Online",
+		"version":             AppVersion,
+		"bot_name":            settings.BotName,
+		"has_token":           settings.TelegramBotToken != "",
+		"has_gemini":          settings.GeminiAPIKey != "",
+		"gemini_model":        settings.GeminiModel,
+		"models_priority":     settings.ModelsPriority,
+		"last_model_used":     settings.LastModelUsed,
+		"voice_response_mode": settings.VoiceResponseMode,
+		"admin_chat_id":       settings.AdminChatID,
+		"active_users":        activeCount,
+		"pending_users":       pendingCount,
+		"messages_sent":       settings.MessagesSent,
+		"messages_received":   settings.MessagesReceived,
+		"tokens_used":         settings.AITokensUsed,
 	})
 }
 
@@ -1129,10 +1269,7 @@ func handleTestNotification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	testMsg := fmt.Sprintf("🔔 <b>Teste de Notificação Bem-Sucedido!</b>
-
-O assistente <b>%s</b> está conectado e comunicando normalmente!
-🕒 Hora: %s", botName, time.Now().Format("15:04:05"))
+	testMsg := fmt.Sprintf("🔔 <b>Teste de Notificação Bem-Sucedido!</b>\n\nO assistente <b>%s</b> está conectado e operando normalmente!\n🕒 Hora: %s", botName, time.Now().Format("15:04:05"))
 	err := sendTelegramMessage(token, adminID, testMsg, nil)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Falha ao enviar mensagem: %v"}`, err), http.StatusInternalServerError)
@@ -1165,17 +1302,18 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp := map[string]interface{}{
-			"bot_name":           settings.BotName,
-			"admin_chat_id":      settings.AdminChatID,
-			"enable_ai":          settings.EnableAI,
-			"gemini_model":       settings.GeminiModel,
-			"models_priority":    settings.ModelsPriority,
-			"last_model_used":    settings.LastModelUsed,
-			"system_prompt":      settings.SystemPrompt,
-			"telegram_bot_token": maskedToken,
-			"gemini_api_key":     maskedGemini,
-			"has_token":          settings.TelegramBotToken != "",
-			"has_gemini":         settings.GeminiAPIKey != "",
+			"bot_name":            settings.BotName,
+			"admin_chat_id":       settings.AdminChatID,
+			"enable_ai":           settings.EnableAI,
+			"gemini_model":        settings.GeminiModel,
+			"models_priority":     settings.ModelsPriority,
+			"last_model_used":     settings.LastModelUsed,
+			"voice_response_mode": settings.VoiceResponseMode,
+			"system_prompt":       settings.SystemPrompt,
+			"telegram_bot_token":  maskedToken,
+			"gemini_api_key":      maskedGemini,
+			"has_token":           settings.TelegramBotToken != "",
+			"has_gemini":          settings.GeminiAPIKey != "",
 		}
 		settingsMu.RUnlock()
 
@@ -1186,14 +1324,15 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		var payload struct {
-			TelegramBotToken string `json:"telegram_bot_token"`
-			AdminChatID      string `json:"admin_chat_id"`
-			BotName          string `json:"bot_name"`
-			EnableAI         bool   `json:"enable_ai"`
-			GeminiAPIKey     string `json:"gemini_api_key"`
-			GeminiModel      string `json:"gemini_model"`
-			ModelsPriority   string `json:"models_priority"`
-			SystemPrompt     string `json:"system_prompt"`
+			TelegramBotToken  string `json:"telegram_bot_token"`
+			AdminChatID       string `json:"admin_chat_id"`
+			BotName           string `json:"bot_name"`
+			EnableAI          bool   `json:"enable_ai"`
+			GeminiAPIKey      string `json:"gemini_api_key"`
+			GeminiModel       string `json:"gemini_model"`
+			ModelsPriority    string `json:"models_priority"`
+			VoiceResponseMode string `json:"voice_response_mode"`
+			SystemPrompt      string `json:"system_prompt"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -1219,6 +1358,9 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if payload.ModelsPriority != "" {
 			settings.ModelsPriority = strings.TrimSpace(payload.ModelsPriority)
+		}
+		if payload.VoiceResponseMode != "" {
+			settings.VoiceResponseMode = strings.TrimSpace(payload.VoiceResponseMode)
 		}
 		if payload.SystemPrompt != "" {
 			settings.SystemPrompt = strings.TrimSpace(payload.SystemPrompt)
@@ -1471,6 +1613,16 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
           </div>
 
           <div class="form-group">
+            <label>Modo de Resposta por Voz / Áudio no Telegram:</label>
+            <select id="voice_response_mode">
+              <option value="auto">Áudio se eu mandar áudio (Recomendado)</option>
+              <option value="always">Responder sempre por áudio (Voz)</option>
+              <option value="never">Responder sempre por texto</option>
+            </select>
+            <small style="color: var(--text-muted); display: block; margin-top: 4px;">Gera mensagem de voz natural em português via áudio no Telegram.</small>
+          </div>
+
+          <div class="form-group">
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
               <input type="checkbox" id="enable_ai" checked>
               <span>Ativar Respostas Inteligentes com IA no Telegram</span>
@@ -1612,10 +1764,10 @@ tap_action:
 
       <div class="card">
         <div class="card-title">
-          <span>⚙️ Configuração do rest_command no seu configuration.yaml</span>
+          <span>⚙️ Configuração da Ação no configuration.yaml</span>
         </div>
         <p style="font-size: 13px; color: var(--text-muted);">
-          Para disponibilizar a ação <b>rest_command.iabot_telegram</b> no Home Assistant:
+          Adicione ao seu configuration.yaml para liberar as ações no Home Assistant:
         </p>
         <div class="code-block" id="yaml-conf">rest_command:
   iabot_telegram:
@@ -1623,14 +1775,14 @@ tap_action:
     method: POST
     headers:
       content-type: "application/json"
-    payload: '{"message": "{{ message }}", "target": "{{ target | default('todos') }}"}'
+    payload: '{"message": "{{ message }}", "target": "{{ target | default(\x27todos\x27) }}"}'
 
   herbie_telegram:
     url: "http://127.0.0.1:8099/api/send_telegram"
     method: POST
     headers:
       content-type: "application/json"
-    payload: '{"message": "{{ message }}", "target": "{{ target | default('todos') }}"}'<button class="copy-btn" onclick="copySnippet('yaml-conf')">Copiar</button></div>
+    payload: '{"message": "{{ message }}", "target": "{{ target | default(\x27todos\x27) }}"}'<button class="copy-btn" onclick="copySnippet('yaml-conf')">Copiar</button></div>
       </div>
     </div>
 
@@ -1675,6 +1827,7 @@ tap_action:
         document.getElementById('admin_chat_id').value = d.admin_chat_id || '';
         document.getElementById('gemini_model').value = d.gemini_model || 'gemini-3.5-flash-lite';
         document.getElementById('models_priority').value = d.models_priority || 'gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.6-flash';
+        document.getElementById('voice_response_mode').value = d.voice_response_mode || 'auto';
         document.getElementById('enable_ai').checked = d.enable_ai !== false;
         document.getElementById('system_prompt').value = d.system_prompt || '';
         if (d.telegram_bot_token) document.getElementById('telegram_bot_token').placeholder = d.telegram_bot_token;
@@ -1691,6 +1844,7 @@ tap_action:
         admin_chat_id: document.getElementById('admin_chat_id').value,
         gemini_model: document.getElementById('gemini_model').value,
         models_priority: document.getElementById('models_priority').value,
+        voice_response_mode: document.getElementById('voice_response_mode').value,
         enable_ai: document.getElementById('enable_ai').checked,
         system_prompt: document.getElementById('system_prompt').value,
         telegram_bot_token: document.getElementById('telegram_bot_token').value,
@@ -1728,9 +1882,9 @@ tap_action:
           if (u.status === 'blocked') badgeClass = 'badge-pending';
 
           var btns = '';
-          if (u.status === 'pending') btns += '<button class="btn btn-sm btn-success" onclick="userAction('approve', '' + u.chat_id + '')">Aprovar</button> ';
-          if (u.status !== 'blocked' && u.status !== 'admin') btns += '<button class="btn btn-sm btn-danger" onclick="userAction('block', '' + u.chat_id + '')">Bloquear</button> ';
-          if (u.status === 'blocked') btns += '<button class="btn btn-sm btn-success" onclick="userAction('approve', '' + u.chat_id + '')">Desbloquear</button> ';
+          if (u.status === 'pending') btns += '<button class="btn btn-sm btn-success" onclick="userAction(\x27approve\x27, \x27' + u.chat_id + '\x27)">Aprovar</button> ';
+          if (u.status !== 'blocked' && u.status !== 'admin') btns += '<button class="btn btn-sm btn-danger" onclick="userAction(\x27block\x27, \x27' + u.chat_id + '\x27)">Bloquear</button> ';
+          if (u.status === 'blocked') btns += '<button class="btn btn-sm btn-success" onclick="userAction(\x27approve\x27, \x27' + u.chat_id + '\x27)">Desbloquear</button> ';
 
           return '<tr>' +
             '<td><b>' + escapeHtml(u.name || 'Desconhecido') + '</b> ' + (u.username ? '@' + escapeHtml(u.username) : '') + '</td>' +
@@ -1786,6 +1940,7 @@ tap_action:
           if (l.type === 'WARN') color = '#f59e0b';
           if (l.type === 'IA') color = '#a855f7';
           if (l.type === 'HA') color = '#10b981';
+          if (l.type === 'VOICE') color = '#ec4899';
           return '<div style="margin-bottom: 4px;"><span style="color: var(--text-muted)">[' + l.timestamp + ']</span> <b style="color: ' + color + '">[' + l.type + ']</b> ' + escapeHtml(l.message) + '</div>';
         }).join('');
       } catch (e) {
@@ -1822,10 +1977,8 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Inicia o loop de polling do Telegram
 	go startTelegramPolling(ctx)
 
-	// Atualiza sensor do Supervisor a cada 30 segundos
 	go func() {
 		for {
 			select {
