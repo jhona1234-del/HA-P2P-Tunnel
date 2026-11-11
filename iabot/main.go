@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.3.2"
+	AppVersion       = "1.4.0"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -46,6 +47,7 @@ type LogEntry struct {
 
 type IABoTSettings struct {
 	TelegramBotToken  string                   `json:"telegram_bot_token"`
+	BotUsername       string                   `json:"bot_username"`
 	AdminChatID       string                   `json:"admin_chat_id"`
 	BotName           string                   `json:"bot_name"`
 	EnableAI          bool                     `json:"enable_ai"`
@@ -370,6 +372,95 @@ type InlineKeyboardMarkup struct {
 	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
 }
 
+
+var (
+	reCodeBlock        = regexp.MustCompile("(?s)```(?:[a-zA-Z0-9_-]+)?\\n?(.*?)```")
+	reInlineCode       = regexp.MustCompile("`([^`\\n]+)`")
+	reBold             = regexp.MustCompile(`(?s)\*\*(.+?)\*\*`)
+	reItalicStar       = regexp.MustCompile(`(?s)\*([^*\n]+?)\*`)
+	reItalicUnderscore = regexp.MustCompile(`(?s)_([^\n_]+?)_`)
+)
+
+func fetchBotInfo(token string) {
+	if token == "" {
+		return
+	}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var res struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FirstName string `json:"first_name"`
+			Username  string `json:"username"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err == nil && res.OK {
+		settingsMu.Lock()
+		settings.BotUsername = res.Result.Username
+		if (settings.BotName == "" || settings.BotName == "Herbie") && res.Result.FirstName != "" {
+			settings.BotName = res.Result.FirstName
+		}
+		settingsMu.Unlock()
+		_ = saveSettings()
+	}
+}
+
+func formatTelegramHTML(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	var codeBlocks []string
+	text = reCodeBlock.ReplaceAllStringFunc(text, func(m string) string {
+		sub := reCodeBlock.FindStringSubmatch(m)
+		if len(sub) > 1 {
+			codeBlocks = append(codeBlocks, "<pre><code>"+html.EscapeString(sub[1])+"</code></pre>")
+			return fmt.Sprintf("___CB_%d___", len(codeBlocks)-1)
+		}
+		return m
+	})
+
+	var inlineCodes []string
+	text = reInlineCode.ReplaceAllStringFunc(text, func(m string) string {
+		sub := reInlineCode.FindStringSubmatch(m)
+		if len(sub) > 1 {
+			inlineCodes = append(inlineCodes, "<code>"+html.EscapeString(sub[1])+"</code>")
+			return fmt.Sprintf("___IC_%d___", len(inlineCodes)-1)
+		}
+		return m
+	})
+
+	text = html.EscapeString(text)
+	text = reBold.ReplaceAllString(text, "<b>$1</b>")
+	text = reItalicStar.ReplaceAllString(text, "<i>$1</i>")
+	text = reItalicUnderscore.ReplaceAllString(text, "<i>$1</i>")
+
+	for idx, cb := range codeBlocks {
+		text = strings.ReplaceAll(text, fmt.Sprintf("___CB_%d___", idx), cb)
+	}
+	for idx, ic := range inlineCodes {
+		text = strings.ReplaceAll(text, fmt.Sprintf("___IC_%d___", idx), ic)
+	}
+
+	return text
+}
+
+func stripHTMLTags(s string) string {
+	s = strings.ReplaceAll(s, "<b>", "")
+	s = strings.ReplaceAll(s, "</b>", "")
+	s = strings.ReplaceAll(s, "<i>", "")
+	s = strings.ReplaceAll(s, "</i>", "")
+	s = strings.ReplaceAll(s, "<code>", "")
+	s = strings.ReplaceAll(s, "</code>", "")
+	s = strings.ReplaceAll(s, "<pre>", "")
+	s = strings.ReplaceAll(s, "</pre>", "")
+	return html.UnescapeString(s)
+}
+
 func sendTelegramMessage(token, chatID, text string, markup *InlineKeyboardMarkup) error {
 	if token == "" || chatID == "" {
 		return fmt.Errorf("token ou chat_id vazio")
@@ -394,6 +485,25 @@ func sendTelegramMessage(token, chatID, text string, markup *InlineKeyboardMarku
 
 	if resp.StatusCode != http.StatusOK {
 		respBytes, _ := io.ReadAll(resp.Body)
+		// Fallback sem parse_mode em caso de erro no HTML
+		fallbackBody := map[string]interface{}{
+			"chat_id": chatID,
+			"text":    stripHTMLTags(text),
+		}
+		if markup != nil {
+			fallbackBody["reply_markup"] = markup
+		}
+		fbPayload, _ := json.Marshal(fallbackBody)
+		fbResp, fbErr := httpClient.Post(url, "application/json", bytes.NewBuffer(fbPayload))
+		if fbErr == nil {
+			defer fbResp.Body.Close()
+			if fbResp.StatusCode == http.StatusOK {
+				settingsMu.Lock()
+				settings.MessagesSent++
+				settingsMu.Unlock()
+				return nil
+			}
+		}
 		return fmt.Errorf("telegram status %d: %s", resp.StatusCode, string(respBytes))
 	}
 
@@ -1132,13 +1242,9 @@ func handleIncomingMessage(token string, msg *struct {
 			}
 		}
 
-		// Envio por Texto padrão
-		formattedReply := strings.ReplaceAll(reply, "**", "<b>")
-		formattedReply = strings.ReplaceAll(formattedReply, "**", "</b>")
-		err = sendTelegramMessage(token, userChatID, formattedReply, nil)
-		if err != nil {
-			_ = sendTelegramMessage(token, userChatID, html.EscapeString(reply), nil)
-		}
+		// Envio por Texto padrão com formatação limpa
+		formattedReply := formatTelegramHTML(reply)
+		_ = sendTelegramMessage(token, userChatID, formattedReply, nil)
 	} else {
 		sendTelegramMessage(token, userChatID, "🤖 A IA está desativada no momento.", nil)
 	}
@@ -1253,6 +1359,7 @@ func handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		"status":              "Online",
 		"version":             AppVersion,
 		"bot_name":            settings.BotName,
+		"bot_username":       settings.BotUsername,
 		"has_token":           settings.TelegramBotToken != "",
 		"has_gemini":          settings.GeminiAPIKey != "",
 		"gemini_model":        settings.GeminiModel,
@@ -1319,6 +1426,7 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 
 		resp := map[string]interface{}{
 			"bot_name":            settings.BotName,
+		"bot_username":       settings.BotUsername,
 			"admin_chat_id":       settings.AdminChatID,
 			"enable_ai":           settings.EnableAI,
 			"gemini_model":        settings.GeminiModel,
@@ -1562,9 +1670,18 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 
     <!-- TAB 1: Configurações -->
     <div id="tab-settings" class="tab-content active">
-      <div class="card">
+      <!-- Bot Actions Bar (Visível quando o Token já está preenchido) -->
+      <div id="bot-actions-bar" style="display: none; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center;">
+        <a id="bot-chat-btn" href="https://t.me/BotFather" target="_blank" class="btn btn-primary">💬 Conversar com o Bot no Telegram</a>
+        <a href="https://t.me/BotFather" target="_blank" class="btn btn-sm" style="background: rgba(255,255,255,0.1); color: #fff;">⚙️ Gerenciar Bot no @BotFather</a>
+        <button type="button" class="btn btn-sm" style="background: rgba(255,255,255,0.1); color: #fff;" onclick="toggleBotFatherTutorial()">❓ Guia @BotFather (Ajuda)</button>
+      </div>
+
+      <!-- Tutorial BotFather (Exibido se o token estiver vazio ou quando o usuário clica no botão de ajuda) -->
+      <div id="botfather-tutorial" class="card" style="display: none;">
         <div class="card-title">
           <span>🚀 Como Criar seu Bot no Telegram com o @BotFather</span>
+          <button type="button" class="btn btn-sm" style="background: rgba(255,255,255,0.1); color: #fff;" onclick="toggleBotFatherTutorial()">✕ Fechar</button>
         </div>
         <div class="step-box">
           <span class="step-num">1.</span> Abra o <a href="https://t.me/BotFather" target="_blank" style="color: #06b6d4; text-decoration: underline; font-weight: bold;">@BotFather no Telegram</a> e clique em <b>Iniciar</b>.
@@ -1686,76 +1803,26 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
       </div>
     </div>
 
-    <!-- TAB 3: Cards Mushroom Prontos -->
+    <!-- TAB 3: Cards Mushroom Prontos (Personalizados Dinamicamente) -->
     <div id="tab-cards" class="tab-content">
       <div class="card">
         <div class="card-title">
-          <span>Card 1: Avisar Claudia / Notificações Rápidas (Estilo Mushroom)</span>
+          <span>Card 1: Notificação Rápida Personalizada (Estilo Mushroom)</span>
         </div>
         <p style="font-size: 13px; color: var(--text-muted);">
-          Toque para enviar mensagem pronta imediata ou segure para digitar:
+          Card gerado dinamicamente para os contatos autorizados da casa:
         </p>
-        <div class="code-block" id="card-1">type: custom:mushroom-template-card
-primary: Avisar Claudia
-secondary: >-
-  Toque = "Chegando!" | Segure = Digitar
-icon: mdi:send-circle
-icon_color: pink
-multiline_secondary: true
-tap_action:
-  action: perform-action
-  perform_action: rest_command.iabot_telegram
-  data:
-    target: Claudia
-    message: ❤️ Amor, estou chegando em casa! Precisa de alguma coisa?
-hold_action:
-  action: more-info
-  entity: script.enviar_iabot_telegram<button class="copy-btn" onclick="copySnippet('card-1')">Copiar</button></div>
+        <div class="code-block" id="card-1">Carregando card personalizado...<button class="copy-btn" onclick="copySnippet('card-1')">Copiar</button></div>
       </div>
 
       <div class="card">
         <div class="card-title">
-          <span>Card 2: Grade de Mensagens com 1 Toque (Chegando, Mercado, Alarme)</span>
+          <span>Card 2: Grade de Mensagens com 1 Toque (Chegando, Recado, Boa Noite)</span>
         </div>
         <p style="font-size: 13px; color: var(--text-muted);">
           Grade compacta para disparar avisos frequentes no Telegram com 1 toque:
         </p>
-        <div class="code-block" id="card-2">type: grid
-columns: 3
-square: false
-cards:
-  - type: custom:mushroom-template-card
-    primary: Chegando!
-    icon: mdi:car-hatchback
-    icon_color: green
-    tap_action:
-      action: perform-action
-      perform_action: rest_command.iabot_telegram
-      data:
-        target: todos
-        message: 🚗 Estou a caminho de casa agora!
-
-  - type: custom:mushroom-template-card
-    primary: Mercado
-    icon: mdi:cart
-    icon_color: amber
-    tap_action:
-      action: perform-action
-      perform_action: rest_command.iabot_telegram
-      data:
-        target: Claudia
-        message: 🛒 Amor, estou no mercado. Quer que leve algo específico?
-
-  - type: custom:mushroom-template-card
-    primary: Boa Noite
-    icon: mdi:weather-night
-    icon_color: indigo
-    tap_action:
-      action: perform-action
-      perform_action: rest_command.iabot_telegram
-      data:
-        target: todos
-        message: 🌙 Casa em modo descanso. Boa noite!<button class="copy-btn" onclick="copySnippet('card-2')">Copiar</button></div>
+        <div class="code-block" id="card-2">Carregando grade de avisos...<button class="copy-btn" onclick="copySnippet('card-2')">Copiar</button></div>
       </div>
 
       <div class="card">
@@ -1775,7 +1842,7 @@ icon_color: light-blue
 multiline_secondary: true
 tap_action:
   action: navigate
-  navigation_path: /hassio/ingress/local_iabot<button class="copy-btn" onclick="copySnippet('card-3')">Copiar</button></div>
+  navigation_path: /iabot<button class="copy-btn" onclick="copySnippet('card-3')">Copiar</button></div>
       </div>
 
       <div class="card">
@@ -1835,6 +1902,102 @@ tap_action:
       if (tabId === 'tab-logs') loadLogs();
     }
 
+    function toggleBotFatherTutorial() {
+      const el = document.getElementById('botfather-tutorial');
+      el.style.display = (el.style.display === 'none' || el.style.display === '') ? 'block' : 'none';
+    }
+
+    function updateBotActions(d) {
+      const hasToken = !!d.has_token;
+      const botName = d.bot_name || 'Herbie';
+      const botUsername = d.bot_username || '';
+
+      const tutorial = document.getElementById('botfather-tutorial');
+      const actionsBar = document.getElementById('bot-actions-bar');
+      const chatBtn = document.getElementById('bot-chat-btn');
+
+      if (hasToken) {
+        tutorial.style.display = 'none';
+        actionsBar.style.display = 'flex';
+        if (botUsername) {
+          chatBtn.innerText = '💬 Abrir ' + botName + ' (@' + botUsername + ') no Telegram';
+          chatBtn.href = 'https://t.me/' + botUsername;
+        } else {
+          chatBtn.innerText = '💬 Abrir ' + botName + ' no Telegram';
+          chatBtn.href = 'https://t.me/BotFather';
+        }
+      } else {
+        tutorial.style.display = 'block';
+        actionsBar.style.display = 'none';
+      }
+    }
+
+    function updateDynamicCards(users) {
+      const approved = (users || []).filter(u => u.status === 'admin' || u.status === 'allowed');
+      let targetUser = 'Familia';
+      if (approved.length > 1) {
+        targetUser = approved[1].name || approved[1].username || 'Familia';
+      } else if (approved.length > 0) {
+        targetUser = approved[0].name || approved[0].username || 'Familia';
+      }
+
+      const card1 = 'type: custom:mushroom-template-card\n' +
+        'primary: Avisar ' + targetUser + '\n' +
+        'secondary: >-\n' +
+        '  Toque = "Chegando!" | Segure = Digitar\n' +
+        'icon: mdi:send-circle\n' +
+        'icon_color: green\n' +
+        'multiline_secondary: true\n' +
+        'tap_action:\n' +
+        '  action: perform-action\n' +
+        '  perform_action: rest_command.iabot_telegram\n' +
+        '  data:\n' +
+        '    target: ' + targetUser + '\n' +
+        '    message: 🚗 Estou a caminho de casa agora!\n' +
+        'hold_action:\n' +
+        '  action: more-info\n' +
+        '  entity: script.enviar_iabot_telegram';
+      const c1El = document.getElementById('card-1');
+      if (c1El) c1El.innerHTML = card1 + '<button class="copy-btn" onclick="copySnippet(\'card-1\')">Copiar</button>';
+
+      const card2 = 'type: grid\n' +
+        'columns: 3\n' +
+        'square: false\n' +
+        'cards:\n' +
+        '  - type: custom:mushroom-template-card\n' +
+        '    primary: Chegando!\n' +
+        '    icon: mdi:car-hatchback\n' +
+        '    icon_color: green\n' +
+        '    tap_action:\n' +
+        '      action: perform-action\n' +
+        '      perform_action: rest_command.iabot_telegram\n' +
+        '      data:\n' +
+        '        target: todos\n' +
+        '        message: 🚗 Estou a caminho de casa agora!\n\n' +
+        '  - type: custom:mushroom-template-card\n' +
+        '    primary: Recado\n' +
+        '    icon: mdi:message-text\n' +
+        '    icon_color: amber\n' +
+        '    tap_action:\n' +
+        '      action: perform-action\n' +
+        '      perform_action: rest_command.iabot_telegram\n' +
+        '      data:\n' +
+        '        target: ' + targetUser + '\n' +
+        '        message: 🛒 Precisa de algo do mercado?\n\n' +
+        '  - type: custom:mushroom-template-card\n' +
+        '    primary: Boa Noite\n' +
+        '    icon: mdi:weather-night\n' +
+        '    icon_color: indigo\n' +
+        '    tap_action:\n' +
+        '      action: perform-action\n' +
+        '      perform_action: rest_command.iabot_telegram\n' +
+        '      data:\n' +
+        '        target: todos\n' +
+        '        message: 🌙 Casa em modo descanso. Boa noite!';
+      const c2El = document.getElementById('card-2');
+      if (c2El) c2El.innerHTML = card2 + '<button class="copy-btn" onclick="copySnippet(\'card-2\')">Copiar</button>';
+    }
+
     async function loadSettings() {
       try {
         const res = await fetch('./api/settings');
@@ -1848,6 +2011,7 @@ tap_action:
         document.getElementById('system_prompt').value = d.system_prompt || '';
         if (d.telegram_bot_token) document.getElementById('telegram_bot_token').placeholder = d.telegram_bot_token;
         if (d.gemini_api_key) document.getElementById('gemini_api_key').placeholder = d.gemini_api_key;
+        updateBotActions(d);
       } catch (e) {
         console.error(e);
       }
@@ -1891,6 +2055,7 @@ tap_action:
           tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Nenhum usuário detectado ainda. Envie /start para o bot no Telegram!</td></tr>';
           return;
         }
+        updateDynamicCards(users);
         tbody.innerHTML = users.map(u => {
           let badgeClass = 'badge-allowed';
           if (u.status === 'admin') badgeClass = 'badge-admin';
@@ -1975,6 +2140,7 @@ tap_action:
 
     document.addEventListener('DOMContentLoaded', () => {
       loadSettings();
+      loadUsers();
       setInterval(loadLogs, 10000);
     });
   </script>
@@ -1989,6 +2155,12 @@ tap_action:
 func main() {
 	loadSettings()
 	addLog("INFO", fmt.Sprintf("Iniciando IABoT v%s...", AppVersion))
+	settingsMu.RLock()
+	curToken := settings.TelegramBotToken
+	settingsMu.RUnlock()
+	if curToken != "" {
+		go fetchBotInfo(curToken)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
