@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.3.1"
+	AppVersion       = "1.3.2"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -108,13 +108,26 @@ func loadSettings() {
 		TelegramUsers:     make(map[string]*TelegramUser),
 	}
 
-	data, err := os.ReadFile(SettingsFilePath)
-	if err != nil {
-		data, err = os.ReadFile(LegacyFilePath)
+	searchPaths := []string{
+		"/config/iabot_settings.json",
+		"/data/iabot_settings.json",
+		"/share/iabot_settings.json",
+		"/data/settings.json",
+		"/config/settings.json",
 	}
 
-	if err == nil {
-		_ = json.Unmarshal(data, &settings)
+	for _, p := range searchPaths {
+		if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
+			var loaded IABoTSettings
+			if err := json.Unmarshal(data, &loaded); err == nil {
+				if loaded.TelegramBotToken != "" || loaded.GeminiAPIKey != "" {
+					settings = loaded
+					break
+				} else if settings.TelegramBotToken == "" {
+					settings = loaded
+				}
+			}
+		}
 	}
 
 	if settings.TelegramUsers == nil {
@@ -143,7 +156,10 @@ func saveSettings() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(SettingsFilePath, data, 0644)
+	_ = os.WriteFile(SettingsFilePath, data, 0644)
+	_ = os.WriteFile("/config/iabot_settings.json", data, 0644)
+	_ = os.WriteFile("/share/iabot_settings.json", data, 0644)
+	return nil
 }
 
 // ==========================================
