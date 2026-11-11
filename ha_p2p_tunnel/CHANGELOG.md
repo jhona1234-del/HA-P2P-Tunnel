@@ -5,6 +5,13 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
+## [0.5.0] - 2026-11-10
+
+### 🚀 Limpeza Total de IA & Foco 100% em Conectividade P2P
+- **Remoção Absoluta de IA e Telegram:** Todas as rotinas de IA e Telegram foram 100% expurgadas do túnel e transferidas para o add-on dedicado IABoT. O HA P2P Tunnel agora cuida exclusivamente da superação de CGNAT (libp2p QUIC/TCP) e acesso HTTPS 443 via Cloudflare.
+- **Configuração Enxuta:** Painel de opções simplificado exclusivamente para a senha PSK (`secret_psk`).
+- **Fix de Compilação:** Correção de imports e estabilização do container.
+
 ## [0.4.2] - 2026-11-10
 
 ### 🚀 Separação de Arquitetura & Otimização

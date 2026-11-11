@@ -1,0 +1,17 @@
+# Binaries and builds
+iabot
+*.exe
+*.test
+*.out
+
+# Data files containing private tokens
+/data/
+*.json
+!repository.yaml
+!config.yaml
+
+# OS and IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

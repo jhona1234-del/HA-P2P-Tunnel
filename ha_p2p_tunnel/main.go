@@ -42,7 +42,7 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.4.2"
+	AppVersion       = "0.5.0"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 )
 
