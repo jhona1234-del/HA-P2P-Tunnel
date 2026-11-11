@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.4.0"
+	AppVersion       = "1.4.1"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -1146,7 +1146,7 @@ func handleIncomingMessage(token string, msg *struct {
 	}
 
 	if text == "/start" || text == "/ajuda" {
-		reply := fmt.Sprintf("👋 <b>Olá, %s!</b>\n\nEu sou o <b>%s</b>, assistente inteligente da casa.\nVocê pode:\n• Comandar a casa: <i>\"ligar astronauta\"</i>, <i>\"apagar ledthor\"</i>\n• Ver status: <code>/status</code>\n• Bater papo por texto ou mensagem de voz!", html.EscapeString(userName), botName)
+		reply := fmt.Sprintf("👋 <b>Olá, %s!</b>\n\nEu sou o <b>%s</b>, assistente inteligente da casa.\nVocê pode:\n• Comandar a casa: <i>\"ligar astronauta\"</i>, <i>\"apagar ledthor\"</i>\n• Ver status da casa: <code>/status</code>\n• Ver túnel P2P e links: <code>/tunel</code>\n• Bater papo por texto ou mensagem de voz!", html.EscapeString(userName), botName)
 		sendTelegramMessage(token, userChatID, reply, nil)
 		return
 	}
@@ -1188,6 +1188,49 @@ func handleIncomingMessage(token string, msg *struct {
 
 		sendTelegramMessage(token, userChatID, sb.String(), nil)
 		return
+	}
+
+	// Consulta Rápida do Túnel P2P (Peer ID, HTTPS, PSK)
+	textLowerClean := strings.ToLower(strings.TrimSpace(text))
+	if text == "/tunel" || text == "/tunnel" || strings.Contains(textLowerClean, "peer id") || strings.Contains(textLowerClean, "link do tunel") || strings.Contains(textLowerClean, "link do túnel") {
+		entities := getHAEntities()
+		var pUrl, pID, psk, tState string
+		for _, e := range entities {
+			if e.EntityID == "sensor.ha_p2p_tunnel_status" {
+				tState = e.State
+				if u, ok := e.Attributes["https_url"].(string); ok {
+					pUrl = u
+				}
+				if id, ok := e.Attributes["peer_id"].(string); ok {
+					pID = id
+				}
+				if k, ok := e.Attributes["psk"].(string); ok {
+					psk = k
+				}
+				break
+			}
+		}
+
+		if tState != "" {
+			var sb strings.Builder
+			sb.WriteString("🚀 <b>HA P2P Tunnel:</b> " + tState + "\n\n")
+			if pUrl != "" {
+				sb.WriteString(fmt.Sprintf("🔗 <b>HTTPS 443:</b> %s\n", pUrl))
+			}
+			if pID != "" {
+				sb.WriteString(fmt.Sprintf("🆔 <b>Peer ID:</b> <code>%s</code>\n", pID))
+			}
+			if psk != "" {
+				sb.WriteString(fmt.Sprintf("🔑 <b>PSK:</b> <code>%s</code>\n", psk))
+			} else {
+				sb.WriteString("🔑 <b>PSK:</b> Desativada (Acesso livre)\n")
+			}
+			sendTelegramMessage(token, userChatID, sb.String(), nil)
+			return
+		} else {
+			sendTelegramMessage(token, userChatID, "⚠️ O complemento <b>HA P2P Tunnel</b> não está ativo ou não foi detectado no Home Assistant.", nil)
+			return
+		}
 	}
 
 	// 1. Controle Direto de Dispositivos por Texto
