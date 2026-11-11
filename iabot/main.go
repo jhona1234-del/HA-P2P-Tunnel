@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.4.1"
+	AppVersion       = "1.4.2"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -214,6 +214,90 @@ func callHAEntityService(domain, service, entityID string) error {
 	}
 	defer resp.Body.Close()
 	return nil
+}
+
+
+type TunnelInfo struct {
+	Status        string `json:"status"`
+	PeerID        string `json:"peer_id"`
+	HttpsURL      string `json:"https_url"`
+	PSK           string `json:"psk"`
+	ActiveStreams int64  `json:"active_streams"`
+}
+
+func getTunnelLiveStatus() *TunnelInfo {
+	// 1. Tenta ler direto da API local na porta 8098 (host_network ultra-rápido)
+	resp, err := httpClient.Get("http://127.0.0.1:8098/api/status")
+	if err == nil {
+		defer resp.Body.Close()
+		var info TunnelInfo
+		if err := json.NewDecoder(resp.Body).Decode(&info); err == nil && info.Status != "" {
+			return &info
+		}
+	}
+
+	// 2. Fallback via entidades do Supervisor
+	entities := getHAEntities()
+	for _, e := range entities {
+		if e.EntityID == "sensor.ha_p2p_tunnel_status" {
+			info := TunnelInfo{Status: e.State}
+			if u, ok := e.Attributes["https_url"].(string); ok {
+				info.HttpsURL = u
+			}
+			if id, ok := e.Attributes["peer_id"].(string); ok {
+				info.PeerID = id
+			}
+			if k, ok := e.Attributes["psk"].(string); ok {
+				info.PSK = k
+			}
+			return &info
+		}
+	}
+	return nil
+}
+
+func buildHAContext() string {
+	var sb strings.Builder
+	sb.WriteString("\n\nESTADO ATUAL DA CASA EM TEMPO REAL:\n")
+
+	// Túnel P2P
+	tInfo := getTunnelLiveStatus()
+	if tInfo != nil && tInfo.Status != "" {
+		sb.WriteString(fmt.Sprintf("- Túnel HA P2P: %s\n", tInfo.Status))
+		if tInfo.HttpsURL != "" {
+			sb.WriteString(fmt.Sprintf("- Endereço HTTPS 443 do Túnel: %s\n", tInfo.HttpsURL))
+		}
+		if tInfo.PeerID != "" {
+			sb.WriteString(fmt.Sprintf("- Peer ID do Túnel: %s\n", tInfo.PeerID))
+		}
+		if tInfo.PSK != "" {
+			sb.WriteString(fmt.Sprintf("- Senha PSK da Rede Privada: %s\n", tInfo.PSK))
+		} else {
+			sb.WriteString("- Senha PSK da Rede Privada: Desativada (Acesso livre)\n")
+		}
+	} else {
+		sb.WriteString("- Túnel HA P2P: Offline ou não detectado.\n")
+	}
+
+	// Dispositivos ligados
+	entities := getHAEntities()
+	var turnedOn []string
+	for _, e := range entities {
+		if (strings.HasPrefix(e.EntityID, "light.") || strings.HasPrefix(e.EntityID, "switch.")) && e.State == "on" {
+			fn := e.EntityID
+			if n, ok := e.Attributes["friendly_name"].(string); ok && n != "" {
+				fn = n
+			}
+			turnedOn = append(turnedOn, fn)
+		}
+	}
+	if len(turnedOn) > 0 {
+		sb.WriteString(fmt.Sprintf("- Dispositivos ligados na casa (%d): %s\n", len(turnedOn), strings.Join(turnedOn, ", ")))
+	} else {
+		sb.WriteString("- Dispositivos ligados na casa: Todos desligados no momento.\n")
+	}
+
+	return sb.String()
 }
 
 func tryControlDevice(text string) (string, bool) {
@@ -742,11 +826,11 @@ func callGeminiAI(userChatID, userPrompt string, audioBytes []byte) (string, err
 	reqBody := GeminiRequest{
 		Contents: history,
 	}
-	if sysPrompt != "" {
-		reqBody.SystemInstruction = &GeminiContent{
-			Role:  "system",
-			Parts: []GeminiPart{{Text: sysPrompt}},
-		}
+	haContext := buildHAContext()
+	fullSystemPrompt := sysPrompt + haContext
+	reqBody.SystemInstruction = &GeminiContent{
+		Role:  "system",
+		Parts: []GeminiPart{{Text: fullSystemPrompt}},
 	}
 	payload, _ := json.Marshal(reqBody)
 
@@ -797,6 +881,12 @@ func callGeminiAI(userChatID, userPrompt string, audioBytes []byte) (string, err
 	}
 
 	addLog("WARN", fmt.Sprintf("Todos os modelos da fila falharam: %v", lastErr))
+	if lastErr != nil {
+		errStr := strings.ToLower(lastErr.Error())
+		if strings.Contains(errStr, "api key") || strings.Contains(errStr, "api_key") || strings.Contains(errStr, "not valid") {
+			return "⚠️ A chave da API do Gemini configurada é inválida ou expirou. Por favor, acesse o painel do IABoT e salve uma chave válida do Google AI Studio.", nil
+		}
+	}
 	return fmt.Sprintf("⚠️ Todos os modelos da fila (%s) estão ocupados no momento. Aguarde alguns instantes!", strings.Join(modelsToTry, ", ")), nil
 }
 
@@ -1192,43 +1282,35 @@ func handleIncomingMessage(token string, msg *struct {
 
 	// Consulta Rápida do Túnel P2P (Peer ID, HTTPS, PSK)
 	textLowerClean := strings.ToLower(strings.TrimSpace(text))
-	if text == "/tunel" || text == "/tunnel" || strings.Contains(textLowerClean, "peer id") || strings.Contains(textLowerClean, "link do tunel") || strings.Contains(textLowerClean, "link do túnel") {
-		entities := getHAEntities()
-		var pUrl, pID, psk, tState string
-		for _, e := range entities {
-			if e.EntityID == "sensor.ha_p2p_tunnel_status" {
-				tState = e.State
-				if u, ok := e.Attributes["https_url"].(string); ok {
-					pUrl = u
-				}
-				if id, ok := e.Attributes["peer_id"].(string); ok {
-					pID = id
-				}
-				if k, ok := e.Attributes["psk"].(string); ok {
-					psk = k
-				}
-				break
-			}
-		}
+	isTunnelQuery := text == "/tunel" || text == "/tunnel" ||
+		textLowerClean == "tunel" || textLowerClean == "túnel" || textLowerClean == "tunel?" || textLowerClean == "túnel?" ||
+		strings.Contains(textLowerClean, "peer id") ||
+		strings.Contains(textLowerClean, "link do tunel") || strings.Contains(textLowerClean, "link do túnel") ||
+		strings.Contains(textLowerClean, "endereco do tunel") || strings.Contains(textLowerClean, "endereço do túnel") ||
+		strings.Contains(textLowerClean, "como está túnel") || strings.Contains(textLowerClean, "como esta túnel") ||
+		strings.Contains(textLowerClean, "como está o túnel") || strings.Contains(textLowerClean, "como esta o tunel") ||
+		strings.Contains(textLowerClean, "qual https") || strings.Contains(textLowerClean, "qual o https")
 
-		if tState != "" {
+	if isTunnelQuery {
+		tInfo := getTunnelLiveStatus()
+		if tInfo != nil && tInfo.Status != "" {
 			var sb strings.Builder
-			sb.WriteString("🚀 <b>HA P2P Tunnel:</b> " + tState + "\n\n")
-			if pUrl != "" {
-				sb.WriteString(fmt.Sprintf("🔗 <b>HTTPS 443:</b> %s\n", pUrl))
+			sb.WriteString(fmt.Sprintf("🚀 <b>HA P2P Tunnel:</b> %s\n\n", tInfo.Status))
+			if tInfo.HttpsURL != "" {
+				sb.WriteString(fmt.Sprintf("🔗 <b>HTTPS 443:</b> %s\n", tInfo.HttpsURL))
 			}
-			if pID != "" {
-				sb.WriteString(fmt.Sprintf("🆔 <b>Peer ID:</b> <code>%s</code>\n", pID))
+			if tInfo.PeerID != "" {
+				sb.WriteString(fmt.Sprintf("🆔 <b>Peer ID:</b> <code>%s</code>\n", tInfo.PeerID))
 			}
-			if psk != "" {
-				sb.WriteString(fmt.Sprintf("🔑 <b>PSK:</b> <code>%s</code>\n", psk))
+			if tInfo.PSK != "" {
+				sb.WriteString(fmt.Sprintf("🔑 <b>PSK:</b> <code>%s</code>\n", tInfo.PSK))
 			} else {
 				sb.WriteString("🔑 <b>PSK:</b> Desativada (Acesso livre)\n")
 			}
 			sendTelegramMessage(token, userChatID, sb.String(), nil)
 			return
 		} else {
-			sendTelegramMessage(token, userChatID, "⚠️ O complemento <b>HA P2P Tunnel</b> não está ativo ou não foi detectado no Home Assistant.", nil)
+			sendTelegramMessage(token, userChatID, "⚠️ O complemento <b>HA P2P Tunnel</b> não está ativo ou não foi detectado no momento.", nil)
 			return
 		}
 	}

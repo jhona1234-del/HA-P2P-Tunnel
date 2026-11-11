@@ -42,7 +42,7 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.5.1"
+	AppVersion       = "0.5.2"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 )
 
@@ -465,6 +465,19 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 	mux.HandleFunc("/download/ha-p2p-tunnel.apk", apkHandler)
 	mux.HandleFunc("/ha-p2p-tunnel.apk", apkHandler)
 	mux.HandleFunc("/HA_P2P_Tunnel.apk", apkHandler)
+
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":         "Online",
+			"version":        AppVersion,
+			"peer_id":        hostID,
+			"https_url":      stats.getHttpsUrl(),
+			"psk":            secretPSK,
+			"active_streams": atomic.LoadInt64(&stats.ActiveStreams),
+			"total_streams":  atomic.LoadInt64(&stats.TotalStreams),
+		})
+	})
 
 	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
