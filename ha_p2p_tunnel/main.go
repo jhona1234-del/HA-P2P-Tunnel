@@ -42,7 +42,7 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.5.0"
+	AppVersion       = "0.5.1"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 )
 
@@ -1080,8 +1080,9 @@ func main() {
 
 	startIngressServer(*ingressPort, host, secretPSK)
 
-	// Publica periodicamente o estado do sensor no Home Assistant Supervisor
+	// Publica periodicamente o estado das entidades e notificações no Home Assistant Supervisor
 	go func() {
+		notified := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -1092,27 +1093,73 @@ func main() {
 					continue
 				}
 				hUrl := stats.getHttpsUrl()
-				body := map[string]interface{}{
-					"state": "Online",
-					"attributes": map[string]interface{}{
-						"friendly_name":  "HA P2P Tunnel Status",
-						"icon":           "mdi:tunnel",
-						"peer_id":        peerIDStr,
-						"https_url":      hUrl,
-						"https_auth_url": hUrl,
-						"active_streams": atomic.LoadInt64(&stats.ActiveStreams),
-						"total_streams":  atomic.LoadInt64(&stats.TotalStreams),
-						"version":        AppVersion,
-					},
-				}
-				p, _ := json.Marshal(body)
-				req, err := http.NewRequest("POST", "http://supervisor/core/api/states/sensor.ha_p2p_tunnel_status", bytes.NewBuffer(p))
-				if err == nil {
-					req.Header.Set("Authorization", "Bearer "+token)
-					req.Header.Set("Content-Type", "application/json")
-					r, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+
+				postEntityState := func(entityID, state string, attrs map[string]interface{}) {
+					body := map[string]interface{}{
+						"state":      state,
+						"attributes": attrs,
+					}
+					p, _ := json.Marshal(body)
+					req, err := http.NewRequest("POST", "http://supervisor/core/api/states/"+entityID, bytes.NewBuffer(p))
 					if err == nil {
-						r.Body.Close()
+						req.Header.Set("Authorization", "Bearer "+token)
+						req.Header.Set("Content-Type", "application/json")
+						if r, err := (&http.Client{Timeout: 5 * time.Second}).Do(req); err == nil {
+							r.Body.Close()
+						}
+					}
+				}
+
+				// 1. Status Principal do Túnel
+				postEntityState("sensor.ha_p2p_tunnel_status", "Online", map[string]interface{}{
+					"friendly_name":  "HA P2P Tunnel Status",
+					"icon":           "mdi:tunnel",
+					"peer_id":        peerIDStr,
+					"https_url":      hUrl,
+					"https_auth_url": hUrl,
+					"psk":            secretPSK,
+					"active_streams": atomic.LoadInt64(&stats.ActiveStreams),
+					"total_streams":  atomic.LoadInt64(&stats.TotalStreams),
+					"version":        AppVersion,
+				})
+
+				// 2. Entidade dedicada de Peer ID
+				postEntityState("sensor.ha_p2p_tunnel_peer_id", peerIDStr, map[string]interface{}{
+					"friendly_name": "HA P2P Tunnel Peer ID",
+					"icon":          "mdi:identifier",
+				})
+
+				// 3. Entidade dedicada de URL HTTPS
+				if hUrl != "" {
+					postEntityState("sensor.ha_p2p_tunnel_https_url", hUrl, map[string]interface{}{
+						"friendly_name": "HA P2P Tunnel HTTPS URL",
+						"icon":          "mdi:web",
+					})
+				}
+
+				// 4. Entidade dedicada de PSK
+				if secretPSK != "" {
+					postEntityState("sensor.ha_p2p_tunnel_psk", secretPSK, map[string]interface{}{
+						"friendly_name": "HA P2P Tunnel PSK",
+						"icon":          "mdi:key-variant",
+					})
+				}
+
+				// 5. Notificação Persistente nativa no Home Assistant (ao conectar)
+				if !notified && hUrl != "" {
+					notified = true
+					notifPayload, _ := json.Marshal(map[string]interface{}{
+						"title":           "HA P2P Tunnel Conectado",
+						"message":         fmt.Sprintf("🚀 Túnel P2P ativo e pronto!\n\n• Peer ID: `%s`\n• HTTPS: %s", peerIDStr, hUrl),
+						"notification_id": "ha_p2p_tunnel_ready",
+					})
+					nReq, nErr := http.NewRequest("POST", "http://supervisor/core/api/services/persistent_notification/create", bytes.NewBuffer(notifPayload))
+					if nErr == nil {
+						nReq.Header.Set("Authorization", "Bearer "+token)
+						nReq.Header.Set("Content-Type", "application/json")
+						if nResp, nDoErr := (&http.Client{Timeout: 5 * time.Second}).Do(nReq); nDoErr == nil {
+							nResp.Body.Close()
+						}
 					}
 				}
 			}

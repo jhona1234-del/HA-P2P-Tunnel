@@ -5,6 +5,16 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
+## [0.5.1] - 2026-11-11
+
+### ✨ Entidades Dedicadas & Notificações Nativas
+- **Entidades Dedicadas no Home Assistant:**
+  - `sensor.ha_p2p_tunnel_peer_id`: Estado contendo o Peer ID puro para automações e consultas por bots.
+  - `sensor.ha_p2p_tunnel_https_url`: Estado com a URL HTTPS 443 ativa.
+  - `sensor.ha_p2p_tunnel_psk`: Estado com a senha PSK configurada.
+  - `sensor.ha_p2p_tunnel_status`: Atributos enriquecidos com `psk`, `peer_id`, `https_url` e streams.
+- **Notificação Persistente Nativa:** Gera automaticamente uma notificação (`persistent_notification.create`) no painel do Home Assistant assim que o túnel e a rota HTTPS ficam online.
+
 ## [0.5.0] - 2026-11-10
 
 ### 🚀 Limpeza Total de IA & Foco 100% em Conectividade P2P
