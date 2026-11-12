@@ -420,37 +420,9 @@ func (cw *countingWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-func getLocalLANIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err == nil {
-		for _, a := range addrs {
-			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-				if ip4 := ipnet.IP.To4(); ip4 != nil {
-					s := ip4.String()
-					if strings.HasPrefix(s, "192.168.") || strings.HasPrefix(s, "10.") {
-						return s
-					}
-				}
-			}
-		}
-		for _, a := range addrs {
-			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-				if ip4 := ipnet.IP.To4(); ip4 != nil {
-					s := ip4.String()
-					if !strings.HasPrefix(s, "172.17.") && !strings.HasPrefix(s, "172.30.") {
-						return s
-					}
-				}
-			}
-		}
-	}
-	return "192.168.100.10"
-}
-
 func startIngressServer(port string, h host.Host, secretPSK string) {
 	mux := http.NewServeMux()
 	pskEnabled := secretPSK != ""
-	lanIP := getLocalLANIP()
 	hostID := h.ID().String()
 
 	apkHandler := func(w http.ResponseWriter, r *http.Request) {
