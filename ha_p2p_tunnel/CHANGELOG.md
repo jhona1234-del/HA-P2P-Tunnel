@@ -5,9 +5,10 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
-## [0.4.4] - 2026-11-11
+## [0.4.5] - 2026-11-11
 
-### ✨ Entidades Dedicadas no HA & Download do APK via GitHub
+### ✨ Entidades Dedicadas no HA & Backup de Chave Persistente
+- **Backup de Identidade Criptográfica (Peer ID):** Mapeamento de `/addon_configs` e `/share` salvando a chave `peer.key`, preservando o mesmo Peer ID mesmo após desinstalações.
 - **Entidades Dedicadas no Home Assistant:**
   - `sensor.ha_p2p_tunnel_status`: Status principal (`Online`/`Offline`) com todos os atributos da rede.
   - `sensor.ha_p2p_tunnel_https_url`: URL HTTPS 443 ativa, ideal para automações que disparam notificações no Telegram quando a URL for gerada ou alterada.

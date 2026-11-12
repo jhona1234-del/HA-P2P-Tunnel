@@ -1540,18 +1540,9 @@ func handleTestNotification(w http.ResponseWriter, r *http.Request) {
 func handleSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		settingsMu.RLock()
-		maskedToken := ""
-		if len(settings.TelegramBotToken) > 8 {
-			maskedToken = settings.TelegramBotToken[:4] + "••••••••" + settings.TelegramBotToken[len(settings.TelegramBotToken)-4:]
-		}
-		maskedGemini := ""
-		if len(settings.GeminiAPIKey) > 8 {
-			maskedGemini = settings.GeminiAPIKey[:4] + "••••••••" + settings.GeminiAPIKey[len(settings.GeminiAPIKey)-4:]
-		}
-
 		resp := map[string]interface{}{
 			"bot_name":            settings.BotName,
-		"bot_username":       settings.BotUsername,
+			"bot_username":        settings.BotUsername,
 			"admin_chat_id":       settings.AdminChatID,
 			"enable_ai":           settings.EnableAI,
 			"gemini_model":        settings.GeminiModel,
@@ -1559,8 +1550,8 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 			"last_model_used":     settings.LastModelUsed,
 			"voice_response_mode": settings.VoiceResponseMode,
 			"system_prompt":       settings.SystemPrompt,
-			"telegram_bot_token":  maskedToken,
-			"gemini_api_key":      maskedGemini,
+			"telegram_bot_token":  settings.TelegramBotToken,
+			"gemini_api_key":      settings.GeminiAPIKey,
 			"has_token":           settings.TelegramBotToken != "",
 			"has_gemini":          settings.GeminiAPIKey != "",
 		}
@@ -1590,10 +1581,10 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 
 		settingsMu.Lock()
-		if payload.TelegramBotToken != "" && !strings.Contains(payload.TelegramBotToken, "••••") {
+		if payload.TelegramBotToken != "" {
 			settings.TelegramBotToken = strings.TrimSpace(payload.TelegramBotToken)
 		}
-		if payload.GeminiAPIKey != "" && !strings.Contains(payload.GeminiAPIKey, "••••") {
+		if payload.GeminiAPIKey != "" {
 			settings.GeminiAPIKey = strings.TrimSpace(payload.GeminiAPIKey)
 		}
 		if payload.AdminChatID != "" {
@@ -1832,7 +1823,11 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
         <form id="settings-form" onsubmit="saveSettingsForm(event)">
           <div class="form-group">
             <label>Token HTTP API do Telegram Bot:</label>
-            <input type="password" id="telegram_bot_token" placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz">
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <input type="password" id="telegram_bot_token" style="flex: 1;" placeholder="Cole aqui seu token do Telegram">
+              <button type="button" class="btn btn-sm" style="background: rgba(255,255,255,0.1); color: #fff; padding: 8px 12px;" onclick="toggleTokenVisibility('telegram_bot_token', this)">👁️ Ver</button>
+              <button type="button" class="btn btn-sm" style="background: rgba(255,255,255,0.1); color: #fff; padding: 8px 12px;" onclick="copyTokenValue('telegram_bot_token')" title="Copiar Token">📋</button>
+            </div>
             <small style="color: var(--text-muted); display: block; margin-top: 4px;">Protegido localmente no Home Assistant.</small>
           </div>
 
@@ -1843,7 +1838,11 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 
           <div class="form-group">
             <label>Chave de API do Google Gemini (IA):</label>
-            <input type="password" id="gemini_api_key" placeholder="AIzaSy...">
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <input type="password" id="gemini_api_key" style="flex: 1;" placeholder="Cole aqui sua chave do Google AI Studio">
+              <button type="button" class="btn btn-sm" style="background: rgba(255,255,255,0.1); color: #fff; padding: 8px 12px;" onclick="toggleTokenVisibility('gemini_api_key', this)">👁️ Ver</button>
+              <button type="button" class="btn btn-sm" style="background: rgba(255,255,255,0.1); color: #fff; padding: 8px 12px;" onclick="copyTokenValue('gemini_api_key')" title="Copiar Chave">📋</button>
+            </div>
             <small style="color: var(--text-muted); display: block; margin-top: 4px;">Obtenha gratuitamente em <a href="https://aistudio.google.com/" target="_blank" style="color: #06b6d4;">Google AI Studio</a>.</small>
           </div>
 
@@ -2134,12 +2133,36 @@ tap_action:
         document.getElementById('voice_response_mode').value = d.voice_response_mode || 'auto';
         document.getElementById('enable_ai').checked = d.enable_ai !== false;
         document.getElementById('system_prompt').value = d.system_prompt || '';
-        if (d.telegram_bot_token) document.getElementById('telegram_bot_token').placeholder = d.telegram_bot_token;
-        if (d.gemini_api_key) document.getElementById('gemini_api_key').placeholder = d.gemini_api_key;
+        if (d.telegram_bot_token) document.getElementById('telegram_bot_token').value = d.telegram_bot_token;
+        if (d.gemini_api_key) document.getElementById('gemini_api_key').value = d.gemini_api_key;
         updateBotActions(d);
       } catch (e) {
         console.error(e);
       }
+    }
+
+    function toggleTokenVisibility(inputId, btn) {
+      const input = document.getElementById(inputId);
+      if (input.type === 'password') {
+        input.type = 'text';
+        btn.innerText = '🙈 Ocultar';
+      } else {
+        input.type = 'password';
+        btn.innerText = '👁️ Ver';
+      }
+    }
+
+    function copyTokenValue(inputId) {
+      const val = document.getElementById(inputId).value;
+      if (!val) {
+        alert('Nenhum valor para copiar.');
+        return;
+      }
+      navigator.clipboard.writeText(val).then(() => {
+        showToast('Copiado com sucesso!');
+      }).catch(() => {
+        alert('Erro ao copiar.');
+      });
     }
 
     async function saveSettingsForm(e) {

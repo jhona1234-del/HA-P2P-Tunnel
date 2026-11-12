@@ -42,7 +42,7 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.4.4"
+	AppVersion       = "0.4.5"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	GitHubApkUrl     = "https://github.com/jhona1234-del/HA-P2P-Tunnel/raw/main/ha_p2p_tunnel/ha-p2p-tunnel.apk"
 )
@@ -381,15 +381,31 @@ func readOptionsPSK() string {
 }
 
 func loadOrCreateKey(path string) (crypto.PrivKey, error) {
-	if data, err := os.ReadFile(path); err == nil {
-		return crypto.UnmarshalPrivateKey(data)
+	searchPaths := []string{
+		path,
+		"/addon_configs/41f7d538_ha_p2p_tunnel/peer.key",
+		"/share/ha_p2p_tunnel_peer.key",
+	}
+	for _, p := range searchPaths {
+		if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
+			if priv, err := crypto.UnmarshalPrivateKey(data); err == nil {
+				for _, bp := range searchPaths {
+					if _, statErr := os.Stat(bp); statErr != nil {
+						_ = os.WriteFile(bp, data, 0600)
+					}
+				}
+				return priv, nil
+			}
+		}
 	}
 	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
 	data, _ := crypto.MarshalPrivateKey(priv)
-	_ = os.WriteFile(path, data, 0600)
+	for _, p := range searchPaths {
+		_ = os.WriteFile(p, data, 0600)
+	}
 	return priv, nil
 }
 

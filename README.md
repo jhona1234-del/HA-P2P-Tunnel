@@ -20,7 +20,7 @@ Clique no botão abaixo para adicionar este repositório diretamente ao seu Home
 
 ## 📦 Complementos Inclusos
 
-### 1. 🌐 HA P2P Tunnel (v0.4.4)
+### 1. 🌐 HA P2P Tunnel (v0.4.5)
 * **Acesso Remoto Ultrarrápido via libp2p (QUIC / TCP)**: Conexão direta entre o app Android e seu Home Assistant, atravessando CGNAT sem abrir portas no roteador.
 * **Túnel HTTPS 443 (Anti-Firewall)**: Conexão para iOS, Windows e redes corporativas via Cloudflare.
 * **Entidades Nativas no Home Assistant**: Publica automaticamente `sensor.ha_p2p_tunnel_status`, `sensor.ha_p2p_tunnel_https_url`, `sensor.ha_p2p_tunnel_peer_id` e `sensor.ha_p2p_tunnel_psk`.
