@@ -106,7 +106,7 @@ func loadSettings() {
 		GeminiModel:       "gemini-3.5-flash-lite",
 		ModelsPriority:    "gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.6-flash",
 		VoiceResponseMode: "auto",
-		SystemPrompt:      "Você é o assistente inteligente da casa de Jhonatan e Claudia. Você é amigável, direto, prestativo e fala português do Brasil com naturalidade. Você tem controle direto dos dispositivos da casa.",
+		SystemPrompt:      "Você é um assistente inteligente e prestativo para automação residencial integrado ao Home Assistant. Você é amigável, direto, prestativo e fala português do Brasil com naturalidade. Você tem controle direto dos dispositivos autorizados da casa.",
 		TelegramUsers:     make(map[string]*TelegramUser),
 	}
 
@@ -503,7 +503,7 @@ func formatTelegramHTML(text string) string {
 		sub := reCodeBlock.FindStringSubmatch(m)
 		if len(sub) > 1 {
 			codeBlocks = append(codeBlocks, "<pre><code>"+html.EscapeString(sub[1])+"</code></pre>")
-			return fmt.Sprintf("___CB_%d___", len(codeBlocks)-1)
+			return fmt.Sprintf("XCIABOTCB%dX", len(codeBlocks)-1)
 		}
 		return m
 	})
@@ -513,7 +513,7 @@ func formatTelegramHTML(text string) string {
 		sub := reInlineCode.FindStringSubmatch(m)
 		if len(sub) > 1 {
 			inlineCodes = append(inlineCodes, "<code>"+html.EscapeString(sub[1])+"</code>")
-			return fmt.Sprintf("___IC_%d___", len(inlineCodes)-1)
+			return fmt.Sprintf("XCIABOTIC%dX", len(inlineCodes)-1)
 		}
 		return m
 	})
@@ -524,10 +524,10 @@ func formatTelegramHTML(text string) string {
 	text = reItalicUnderscore.ReplaceAllString(text, "<i>$1</i>")
 
 	for idx, cb := range codeBlocks {
-		text = strings.ReplaceAll(text, fmt.Sprintf("___CB_%d___", idx), cb)
+		text = strings.ReplaceAll(text, fmt.Sprintf("XCIABOTCB%dX", idx), cb)
 	}
 	for idx, ic := range inlineCodes {
-		text = strings.ReplaceAll(text, fmt.Sprintf("___IC_%d___", idx), ic)
+		text = strings.ReplaceAll(text, fmt.Sprintf("XCIABOTIC%dX", idx), ic)
 	}
 
 	return text
@@ -1086,7 +1086,7 @@ func handleIncomingMessage(token string, msg *struct {
 		settingsMu.Unlock()
 		_ = saveSettings()
 		addLog("INFO", fmt.Sprintf("Novo Administrador configurado: %s (%s)", userName, userChatID))
-		welcomeAdmin := fmt.Sprintf("👑 <b>Bem-vindo, Administrador!</b>\n\nVocê é o administrador principal do <b>%s</b>.\n\nComandos disponíveis:\n• <code>/status</code> - Ver status e luzes ligadas\n• <code>/usuarios</code> - Listar usuários autorizados\n• <code>/aprovar &lt;id&gt; [Nome]</code> - Autorizar usuário\n• <code>/bloquear &lt;id&gt;</code> - Bloquear usuário\n\n💡 Você também pode dizer ou mandar áudio com <i>\"ligar astronauta\"</i> ou <i>\"apagar ledthor\"</i>!", botName)
+		welcomeAdmin := fmt.Sprintf("👑 <b>Bem-vindo, Administrador!</b>\n\nVocê é o administrador principal do <b>%s</b>.\n\nComandos disponíveis:\n• <code>/status</code> - Ver status e luzes ligadas\n• <code>/usuarios</code> - Listar usuários autorizados\n• <code>/aprovar &lt;id&gt; [Nome]</code> - Autorizar usuário\n• <code>/bloquear &lt;id&gt;</code> - Bloquear usuário\n\n💡 Você também pode dizer ou mandar áudio com <i>\"ligar luz da sala\"</i> ou <i>\"apagar abajur\"</i>!", botName)
 		sendTelegramMessage(token, userChatID, welcomeAdmin, nil)
 		updateSupervisorSensor()
 		return
@@ -1236,7 +1236,7 @@ func handleIncomingMessage(token string, msg *struct {
 	}
 
 	if text == "/start" || text == "/ajuda" {
-		reply := fmt.Sprintf("👋 <b>Olá, %s!</b>\n\nEu sou o <b>%s</b>, assistente inteligente da casa.\nVocê pode:\n• Comandar a casa: <i>\"ligar astronauta\"</i>, <i>\"apagar ledthor\"</i>\n• Ver status da casa: <code>/status</code>\n• Ver túnel P2P e links: <code>/tunel</code>\n• Bater papo por texto ou mensagem de voz!", html.EscapeString(userName), botName)
+		reply := fmt.Sprintf("👋 <b>Olá, %s!</b>\n\nEu sou o <b>%s</b>, assistente inteligente da casa.\nVocê pode:\n• Comandar a casa: <i>\"ligar luz da sala\"</i>, <i>\"apagar abajur\"</i>\n• Ver status da casa: <code>/status</code>\n• Ver túnel P2P e links: <code>/tunel</code>\n• Bater papo por texto ou mensagem de voz!", html.EscapeString(userName), botName)
 		sendTelegramMessage(token, userChatID, reply, nil)
 		return
 	}
@@ -1381,7 +1381,7 @@ func handleIncomingMessage(token string, msg *struct {
 
 type SendNotificationRequest struct {
 	Message string `json:"message"`
-	Target  string `json:"target"` // "Jhonatan", "Claudia", "todos", "admin", or <chat_id>
+	Target  string `json:"target"` // Nome do contato (ex: "Jhonatan", "Familia"), "todos", "admin", ou chat_id numérico
 }
 
 func sendNotificationToTargets(target, message string) ([]string, error) {

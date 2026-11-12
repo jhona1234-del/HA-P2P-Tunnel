@@ -99,16 +99,37 @@ O painel deste Add-on oferece monitoramento em tempo real:
 
 ---
 
-## 🤖 Assistente IA & Bot do Telegram Integrados (v0.4.0)
+## 📊 Entidades Nativas no Home Assistant (v0.4.4)
 
-A partir da versão **0.4.0**, o add-on incorpora um assistente pessoal com bot do Telegram e inteligência artificial Google Gemini integrada:
+O add-on publica automaticamente sensores nativos no Home Assistant para integração com dashboards e automações:
 
-* **Controle e Status da Casa:** Pergunte ao bot sobre a casa ou peça para ligar e desligar luzes diretamente pelo Telegram.
-* **Fila de Prioridade Gemini com Fallback:** Suporte dinâmico a `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite` e `gemini-2.5-flash`. Se um modelo atingir a cota (429), o próximo da fila assume instantaneamente sem interromper o serviço.
-* **Notificações Sem YAML pelo Home Assistant:**
-  * **Opção 1 (Visual / Zero YAML):** Em qualquer automação, adicione a ação **Disparar evento** -> Tipo do evento: `p2p_telegram` -> Dados: `message: "Sua mensagem aqui"`. O add-on recebe o evento instantaneamente via WebSocket.
-  * **Opção 2 (REST):** Envie requisições POST para `http://local-ha-p2p-tunnel:8099/api/send_telegram` com payload `{"message": "Texto", "target": "admin"}`.
-* **Cadastro de Administrador Instantâneo:** Ao iniciar o bot e enviar `/start` pela primeira vez, seu Chat ID é configurado automaticamente como administrador da casa.
+* `sensor.ha_p2p_tunnel_status`: Status da conexão (`Online`/`Offline`), exibindo nos atributos o número de streams ativas, versão e parâmetros da rede.
+* `sensor.ha_p2p_tunnel_https_url`: Endereço HTTPS 443 ativo gerado pelo Cloudflare (ideal para disparar notificações quando o túnel for conectado ou a URL for renovada).
+* `sensor.ha_p2p_tunnel_peer_id`: Peer ID criptográfico puro do seu Home Assistant na rede P2P.
+* `sensor.ha_p2p_tunnel_psk`: Status da Chave de Proteção (PSK).
+
+### Exemplo de Automação: Notificar Mudança de URL no Telegram
+
+Para receber uma notificação no Telegram toda vez que o túnel conectar ou renovar o link HTTPS, use a automação abaixo no seu Home Assistant:
+
+```yaml
+alias: 'HA P2P Tunnel: Notificar Novo Link HTTPS'
+description: 'Envia o novo link do túnel para o Telegram ao conectar'
+trigger:
+  - trigger: state
+    entity_id: sensor.ha_p2p_tunnel_https_url
+condition:
+  - condition: template
+    value_template: "{{ trigger.to_state.state not in ['unavailable', 'unknown', 'Iniciando...', ''] and trigger.to_state.state != trigger.from_state.state }}"
+action:
+  - action: rest_command.iabot_telegram
+    data:
+      target: admin
+      message: >-
+        🌐 Novo endereço HTTPS do HA P2P Tunnel ativo:
+        {{ trigger.to_state.state }}
+mode: single
+```
 
 ---
 

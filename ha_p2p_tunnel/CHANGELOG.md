@@ -5,22 +5,17 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.
 
 ---
 
-## [0.5.1] - 2026-11-11
+## [0.4.4] - 2026-11-11
 
-### ✨ Entidades Dedicadas & Notificações Nativas
+### ✨ Entidades Dedicadas no HA & Download do APK via GitHub
 - **Entidades Dedicadas no Home Assistant:**
-  - `sensor.ha_p2p_tunnel_peer_id`: Estado contendo o Peer ID puro para automações e consultas por bots.
-  - `sensor.ha_p2p_tunnel_https_url`: Estado com a URL HTTPS 443 ativa.
-  - `sensor.ha_p2p_tunnel_psk`: Estado com a senha PSK configurada.
-  - `sensor.ha_p2p_tunnel_status`: Atributos enriquecidos com `psk`, `peer_id`, `https_url` e streams.
-- **Notificação Persistente Nativa:** Gera automaticamente uma notificação (`persistent_notification.create`) no painel do Home Assistant assim que o túnel e a rota HTTPS ficam online.
-
-## [0.5.0] - 2026-11-10
-
-### 🚀 Limpeza Total de IA & Foco 100% em Conectividade P2P
-- **Remoção Absoluta de IA e Telegram:** Todas as rotinas de IA e Telegram foram 100% expurgadas do túnel e transferidas para o add-on dedicado IABoT. O HA P2P Tunnel agora cuida exclusivamente da superação de CGNAT (libp2p QUIC/TCP) e acesso HTTPS 443 via Cloudflare.
-- **Configuração Enxuta:** Painel de opções simplificado exclusivamente para a senha PSK (`secret_psk`).
-- **Fix de Compilação:** Correção de imports e estabilização do container.
+  - `sensor.ha_p2p_tunnel_status`: Status principal (`Online`/`Offline`) com todos os atributos da rede.
+  - `sensor.ha_p2p_tunnel_https_url`: URL HTTPS 443 ativa, ideal para automações que disparam notificações no Telegram quando a URL for gerada ou alterada.
+  - `sensor.ha_p2p_tunnel_peer_id`: Peer ID puro para pareamento e integrações.
+  - `sensor.ha_p2p_tunnel_psk`: Status e chave da rede privada.
+- **Resolução de Rede Supervisor:** Conexão multi-endpoint (`http://supervisor/core/api`, `http://172.30.32.2/core/api` e `http://127.0.0.1:8123/api`) garantindo que as entidades publiquem mesmo sob `host_network: true`.
+- **Download do APK Direto via GitHub & QR Code:** QR Code e botão de download apontando diretamente para o repositório oficial no GitHub, permitindo baixar em qualquer rede (LAN ou 4G/5G).
+- **Notificação Persistente Nativa:** Gera automaticamente uma notificação no painel do Home Assistant assim que a rota HTTPS fica online.
 
 ## [0.4.2] - 2026-11-10
 

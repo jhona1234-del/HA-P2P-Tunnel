@@ -42,8 +42,9 @@ import (
 const (
 	ProtocolID       = protocol.ID("/ha-p2p-tunnel/1.0.0")
 	ProtocolIDReport = protocol.ID("/ha-p2p-tunnel-report/1.0.0")
-	AppVersion       = "0.5.2"
+	AppVersion       = "0.4.4"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
+	GitHubApkUrl     = "https://github.com/jhona1234-del/HA-P2P-Tunnel/raw/main/ha_p2p_tunnel/ha-p2p-tunnel.apk"
 )
 
 type ConnectionEvent struct {
@@ -442,23 +443,18 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 			"/data/ha-p2p-tunnel.apk",
 			"./ha-p2p-tunnel.apk",
 		}
-		var foundPath string
 		for _, p := range apkPaths {
 			if _, err := os.Stat(p); err == nil {
-				foundPath = p
-				break
+				w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+				w.Header().Set("Content-Disposition", "attachment; filename=\"HA_P2P_Tunnel.apk\"")
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+				w.Header().Set("Pragma", "no-cache")
+				w.Header().Set("Expires", "0")
+				http.ServeFile(w, r, p)
+				return
 			}
 		}
-		if foundPath == "" {
-			http.Error(w, "APK não encontrado no servidor do Add-on.", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/vnd.android.package-archive")
-		w.Header().Set("Content-Disposition", "attachment; filename=\"HA_P2P_Tunnel.apk\"")
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
-		http.ServeFile(w, r, foundPath)
+		http.Redirect(w, r, GitHubApkUrl, http.StatusFound)
 	}
 
 	mux.HandleFunc("/download/", apkHandler)
@@ -486,8 +482,7 @@ func startIngressServer(port string, h host.Host, secretPSK string) {
 	})
 
 	mux.HandleFunc("/qr-apk.png", func(w http.ResponseWriter, r *http.Request) {
-		downloadUrl := fmt.Sprintf("http://%s:8098/download/ha-p2p-tunnel.apk", lanIP)
-		png, err := qrcode.Encode(downloadUrl, qrcode.Low, 350)
+		png, err := qrcode.Encode(GitHubApkUrl, qrcode.Low, 350)
 		if err != nil {
 			http.Error(w, "Erro ao gerar QR", http.StatusInternalServerError)
 			return
@@ -654,9 +649,9 @@ const htmlTemplate = `<!DOCTYPE html>
       <h2><span class="step-num">1</span> Baixar App Android</h2>
       <div class="qr-desc">Aponte a câmera do celular para baixar o APK:</div>
       <img class="qr-img" id="qrApkImg" src="./qr-apk.png" alt="QR Code Download APK">
-      <a class="btn btn-green" href="{{DIRECT_DOWNLOAD_URL}}" target="_blank" download="HA_P2P_Tunnel.apk">⬇ Baixar APK Direto</a>
+      <a class="btn btn-green" href="{{DIRECT_DOWNLOAD_URL}}" target="_blank">⬇ Baixar APK Direto</a>
       <div class="link-direct">
-        Link na rede local:<br>
+        Download oficial via GitHub:<br>
         <a href="{{DIRECT_DOWNLOAD_URL}}" target="_blank">{{DIRECT_DOWNLOAD_URL}}</a>
       </div>
     </div>
@@ -1004,7 +999,7 @@ updateStats();
 		if pskEnabled {
 			pskBadge = `<span class="badge badge-on">Ativada (Protegida)</span>`
 		}
-		directDownloadUrl := fmt.Sprintf("http://%s:8098/download/ha-p2p-tunnel.apk", lanIP)
+		directDownloadUrl := GitHubApkUrl
 
 		httpsUrl := stats.getHttpsUrl()
 		fullHttpsUrl := httpsUrl
@@ -1095,86 +1090,151 @@ func main() {
 
 	// Publica periodicamente o estado das entidades e notificações no Home Assistant Supervisor
 	go func() {
-		notified := false
+		lastNotifiedURL := ""
+		endpoints := []string{
+			"http://supervisor/core/api",
+			"http://172.30.32.2/core/api",
+			"http://127.0.0.1:8123/api",
+		}
+
+		postEntityState := func(token, entityID, state string, attrs map[string]interface{}) bool {
+			body := map[string]interface{}{
+				"state":      state,
+				"attributes": attrs,
+			}
+			p, err := json.Marshal(body)
+			if err != nil {
+				return false
+			}
+
+			client := &http.Client{Timeout: 3 * time.Second}
+			for _, base := range endpoints {
+				req, err := http.NewRequest("POST", base+"/states/"+entityID, bytes.NewBuffer(p))
+				if err != nil {
+					continue
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := client.Do(req)
+				if err == nil {
+					resp.Body.Close()
+					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						return true
+					}
+				}
+			}
+			return false
+		}
+
+		createNotification := func(token, title, msg, notifID string) {
+			notifPayload, err := json.Marshal(map[string]interface{}{
+				"title":           title,
+				"message":         msg,
+				"notification_id": notifID,
+			})
+			if err != nil {
+				return
+			}
+
+			client := &http.Client{Timeout: 3 * time.Second}
+			for _, base := range endpoints {
+				url := base + "/services/persistent_notification/create"
+				req, err := http.NewRequest("POST", url, bytes.NewBuffer(notifPayload))
+				if err != nil {
+					continue
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := client.Do(req)
+				if err == nil {
+					resp.Body.Close()
+					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						break
+					}
+				}
+			}
+		}
+
+		updateAll := func() {
+			token := os.Getenv("SUPERVISOR_TOKEN")
+			if token == "" {
+				return
+			}
+			hUrl := stats.getHttpsUrl()
+
+			// 1. Status Principal do Túnel
+			statusAttrs := map[string]interface{}{
+				"friendly_name":  "HA P2P Tunnel Status",
+				"icon":           "mdi:tunnel",
+				"peer_id":        peerIDStr,
+				"https_url":      hUrl,
+				"https_auth_url": hUrl,
+				"psk":            secretPSK,
+				"active_streams": atomic.LoadInt64(&stats.ActiveStreams),
+				"total_streams":  atomic.LoadInt64(&stats.TotalStreams),
+				"version":        AppVersion,
+			}
+			postEntityState(token, "sensor.ha_p2p_tunnel_status", "Online", statusAttrs)
+
+			// 2. Entidade dedicada de Peer ID
+			postEntityState(token, "sensor.ha_p2p_tunnel_peer_id", peerIDStr, map[string]interface{}{
+				"friendly_name": "HA P2P Tunnel Peer ID",
+				"icon":          "mdi:identifier",
+			})
+
+			// 3. Entidade dedicada de URL HTTPS
+			urlState := hUrl
+			if urlState == "" {
+				urlState = "Iniciando..."
+			}
+			postEntityState(token, "sensor.ha_p2p_tunnel_https_url", urlState, map[string]interface{}{
+				"friendly_name": "HA P2P Tunnel HTTPS URL",
+				"icon":          "mdi:web",
+				"peer_id":       peerIDStr,
+				"updated_at":    time.Now().Format("2006-01-02 15:04:05"),
+			})
+
+			// 4. Entidade dedicada de PSK
+			pskState := secretPSK
+			if pskState == "" {
+				pskState = "Desativada"
+			}
+			postEntityState(token, "sensor.ha_p2p_tunnel_psk", pskState, map[string]interface{}{
+				"friendly_name": "HA P2P Tunnel PSK",
+				"icon":          "mdi:key-variant",
+			})
+
+			// 5. Notificação Persistente nativa no Home Assistant (ao conectar ou quando a URL mudar)
+			if hUrl != "" && hUrl != lastNotifiedURL {
+				lastNotifiedURL = hUrl
+				createNotification(token,
+					"HA P2P Tunnel Conectado",
+					fmt.Sprintf("🚀 Túnel P2P ativo e pronto!\n\n• Peer ID: `%s`\n• HTTPS: %s", peerIDStr, hUrl),
+					"ha_p2p_tunnel_ready",
+				)
+				printLog("[HA ENTITY] Nova URL HTTPS detectada e publicada: %s\n", hUrl)
+			}
+		}
+
+		// Publica imediatamente no início
+		updateAll()
+
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
-				return
-			case <-time.After(15 * time.Second):
 				token := os.Getenv("SUPERVISOR_TOKEN")
-				if token == "" {
-					continue
-				}
-				hUrl := stats.getHttpsUrl()
-
-				postEntityState := func(entityID, state string, attrs map[string]interface{}) {
-					body := map[string]interface{}{
-						"state":      state,
-						"attributes": attrs,
-					}
-					p, _ := json.Marshal(body)
-					req, err := http.NewRequest("POST", "http://supervisor/core/api/states/"+entityID, bytes.NewBuffer(p))
-					if err == nil {
-						req.Header.Set("Authorization", "Bearer "+token)
-						req.Header.Set("Content-Type", "application/json")
-						if r, err := (&http.Client{Timeout: 5 * time.Second}).Do(req); err == nil {
-							r.Body.Close()
-						}
-					}
-				}
-
-				// 1. Status Principal do Túnel
-				postEntityState("sensor.ha_p2p_tunnel_status", "Online", map[string]interface{}{
-					"friendly_name":  "HA P2P Tunnel Status",
-					"icon":           "mdi:tunnel",
-					"peer_id":        peerIDStr,
-					"https_url":      hUrl,
-					"https_auth_url": hUrl,
-					"psk":            secretPSK,
-					"active_streams": atomic.LoadInt64(&stats.ActiveStreams),
-					"total_streams":  atomic.LoadInt64(&stats.TotalStreams),
-					"version":        AppVersion,
-				})
-
-				// 2. Entidade dedicada de Peer ID
-				postEntityState("sensor.ha_p2p_tunnel_peer_id", peerIDStr, map[string]interface{}{
-					"friendly_name": "HA P2P Tunnel Peer ID",
-					"icon":          "mdi:identifier",
-				})
-
-				// 3. Entidade dedicada de URL HTTPS
-				if hUrl != "" {
-					postEntityState("sensor.ha_p2p_tunnel_https_url", hUrl, map[string]interface{}{
-						"friendly_name": "HA P2P Tunnel HTTPS URL",
-						"icon":          "mdi:web",
+				if token != "" {
+					postEntityState(token, "sensor.ha_p2p_tunnel_status", "Offline", map[string]interface{}{
+						"friendly_name": "HA P2P Tunnel Status",
+						"icon":          "mdi:tunnel",
 					})
 				}
-
-				// 4. Entidade dedicada de PSK
-				if secretPSK != "" {
-					postEntityState("sensor.ha_p2p_tunnel_psk", secretPSK, map[string]interface{}{
-						"friendly_name": "HA P2P Tunnel PSK",
-						"icon":          "mdi:key-variant",
-					})
-				}
-
-				// 5. Notificação Persistente nativa no Home Assistant (ao conectar)
-				if !notified && hUrl != "" {
-					notified = true
-					notifPayload, _ := json.Marshal(map[string]interface{}{
-						"title":           "HA P2P Tunnel Conectado",
-						"message":         fmt.Sprintf("🚀 Túnel P2P ativo e pronto!\n\n• Peer ID: `%s`\n• HTTPS: %s", peerIDStr, hUrl),
-						"notification_id": "ha_p2p_tunnel_ready",
-					})
-					nReq, nErr := http.NewRequest("POST", "http://supervisor/core/api/services/persistent_notification/create", bytes.NewBuffer(notifPayload))
-					if nErr == nil {
-						nReq.Header.Set("Authorization", "Bearer "+token)
-						nReq.Header.Set("Content-Type", "application/json")
-						if nResp, nDoErr := (&http.Client{Timeout: 5 * time.Second}).Do(nReq); nDoErr == nil {
-							nResp.Body.Close()
-						}
-					}
-				}
+				return
+			case <-ticker.C:
+				updateAll()
 			}
 		}
 	}()
