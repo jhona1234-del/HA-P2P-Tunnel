@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.4.3"
+	AppVersion       = "1.4.4"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -238,22 +238,47 @@ func getTunnelLiveStatus() *TunnelInfo {
 
 	// 2. Fallback via entidades do Supervisor
 	entities := getHAEntities()
+	var info *TunnelInfo
 	for _, e := range entities {
 		if e.EntityID == "sensor.ha_p2p_tunnel_status" {
-			info := TunnelInfo{Status: e.State}
-			if u, ok := e.Attributes["https_url"].(string); ok {
+			if info == nil {
+				info = &TunnelInfo{Status: e.State}
+			} else {
+				info.Status = e.State
+			}
+			if u, ok := e.Attributes["https_url"].(string); ok && u != "" {
 				info.HttpsURL = u
 			}
-			if id, ok := e.Attributes["peer_id"].(string); ok {
+			if id, ok := e.Attributes["peer_id"].(string); ok && id != "" {
 				info.PeerID = id
 			}
-			if k, ok := e.Attributes["psk"].(string); ok {
+			if k, ok := e.Attributes["psk"].(string); ok && k != "" {
 				info.PSK = k
 			}
-			return &info
+		} else if e.EntityID == "sensor.ha_p2p_tunnel_https_url" {
+			if info == nil {
+				info = &TunnelInfo{Status: "Online"}
+			}
+			if e.State != "" && e.State != "Iniciando..." && e.State != "unavailable" && e.State != "unknown" {
+				info.HttpsURL = e.State
+			}
+		} else if e.EntityID == "sensor.ha_p2p_tunnel_peer_id" {
+			if info == nil {
+				info = &TunnelInfo{Status: "Online"}
+			}
+			if e.State != "" && e.State != "unavailable" && e.State != "unknown" {
+				info.PeerID = e.State
+			}
+		} else if e.EntityID == "sensor.ha_p2p_tunnel_psk" {
+			if info == nil {
+				info = &TunnelInfo{Status: "Online"}
+			}
+			if e.State != "" && e.State != "Desativada" && e.State != "unavailable" && e.State != "unknown" {
+				info.PSK = e.State
+			}
 		}
 	}
-	return nil
+	return info
 }
 
 func buildHAContext() string {
@@ -265,13 +290,13 @@ func buildHAContext() string {
 	if tInfo != nil && tInfo.Status != "" {
 		sb.WriteString(fmt.Sprintf("- Túnel HA P2P: %s\n", tInfo.Status))
 		if tInfo.HttpsURL != "" {
-			sb.WriteString(fmt.Sprintf("- Endereço HTTPS 443 do Túnel: %s\n", tInfo.HttpsURL))
+			sb.WriteString(fmt.Sprintf("- Endereço HTTPS do Túnel: %s (se citar, forneça o link direto ou em [link](url))\n", tInfo.HttpsURL))
 		}
 		if tInfo.PeerID != "" {
-			sb.WriteString(fmt.Sprintf("- Peer ID do Túnel: %s\n", tInfo.PeerID))
+			sb.WriteString(fmt.Sprintf("- Peer ID do Túnel: `%s` (OBRIGATÓRIO: cite sempre entre crases `...` para permitir cópia com 1 toque no Telegram)\n", tInfo.PeerID))
 		}
 		if tInfo.PSK != "" {
-			sb.WriteString(fmt.Sprintf("- Senha PSK da Rede Privada: %s\n", tInfo.PSK))
+			sb.WriteString(fmt.Sprintf("- Senha PSK da Rede Privada: `%s` (coloque entre crases `...`)\n", tInfo.PSK))
 		} else {
 			sb.WriteString("- Senha PSK da Rede Privada: Desativada (Acesso livre)\n")
 		}
@@ -449,7 +474,8 @@ func updateSupervisorSensor() {
 
 type InlineKeyboardButton struct {
 	Text         string `json:"text"`
-	CallbackData string `json:"callback_data"`
+	CallbackData string `json:"callback_data,omitempty"`
+	URL          string `json:"url,omitempty"`
 }
 
 type InlineKeyboardMarkup struct {
@@ -463,6 +489,10 @@ var (
 	reBold             = regexp.MustCompile(`(?s)\*\*(.+?)\*\*`)
 	reItalicStar       = regexp.MustCompile(`(?s)\*([^*\n]+?)\*`)
 	reItalicUnderscore = regexp.MustCompile(`(?s)_([^\n_]+?)_`)
+	reMarkdownLink     = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\s)]+)\)`)
+	rePeerID           = regexp.MustCompile(`\b(12D3Koo[1-9A-HJ-NP-Za-km-z]{40,50})\b`)
+	reExistingHTML     = regexp.MustCompile(`(?i)</?(?:b|i|u|s|code|pre|blockquote)\b[^>]*>|<a\s+[^>]*>|</a>`)
+	reHTMLTagStrip     = regexp.MustCompile(`<a\s+(?:[^>]*?\s+)?href="([^"]*)"[^>]*>(.*?)</a>`)
 )
 
 func fetchBotInfo(token string) {
@@ -518,6 +548,30 @@ func formatTelegramHTML(text string) string {
 		return m
 	})
 
+	// Detecta Peer ID do libp2p (12D3Koo...) e envelopa em <code> para cópia direta com um toque
+	text = rePeerID.ReplaceAllStringFunc(text, func(m string) string {
+		inlineCodes = append(inlineCodes, "<code>"+html.EscapeString(m)+"</code>")
+		return fmt.Sprintf("XCIABOTIC%dX", len(inlineCodes)-1)
+	})
+
+	var links []string
+	text = reMarkdownLink.ReplaceAllStringFunc(text, func(m string) string {
+		sub := reMarkdownLink.FindStringSubmatch(m)
+		if len(sub) == 3 {
+			linkText := html.EscapeString(sub[1])
+			linkURL := html.EscapeString(sub[2])
+			links = append(links, fmt.Sprintf("<a href=\"%s\">%s</a>", linkURL, linkText))
+			return fmt.Sprintf("XCIABOTLK%dX", len(links)-1)
+		}
+		return m
+	})
+
+	var existingTags []string
+	text = reExistingHTML.ReplaceAllStringFunc(text, func(m string) string {
+		existingTags = append(existingTags, m)
+		return fmt.Sprintf("XCIABOTHT%dX", len(existingTags)-1)
+	})
+
 	text = html.EscapeString(text)
 	text = reBold.ReplaceAllString(text, "<b>$1</b>")
 	text = reItalicStar.ReplaceAllString(text, "<i>$1</i>")
@@ -528,6 +582,12 @@ func formatTelegramHTML(text string) string {
 	}
 	for idx, ic := range inlineCodes {
 		text = strings.ReplaceAll(text, fmt.Sprintf("XCIABOTIC%dX", idx), ic)
+	}
+	for idx, lk := range links {
+		text = strings.ReplaceAll(text, fmt.Sprintf("XCIABOTLK%dX", idx), lk)
+	}
+	for idx, ht := range existingTags {
+		text = strings.ReplaceAll(text, fmt.Sprintf("XCIABOTHT%dX", idx), ht)
 	}
 
 	return text
@@ -542,6 +602,7 @@ func stripHTMLTags(s string) string {
 	s = strings.ReplaceAll(s, "</code>", "")
 	s = strings.ReplaceAll(s, "<pre>", "")
 	s = strings.ReplaceAll(s, "</pre>", "")
+	s = reHTMLTagStrip.ReplaceAllString(s, "$2 ($1)")
 	return html.UnescapeString(s)
 }
 
@@ -1282,32 +1343,55 @@ func handleIncomingMessage(token string, msg *struct {
 
 	// Consulta Rápida do Túnel P2P (Peer ID, HTTPS, PSK)
 	textLowerClean := strings.ToLower(strings.TrimSpace(text))
-	isTunnelQuery := text == "/tunel" || text == "/tunnel" ||
-		textLowerClean == "tunel" || textLowerClean == "túnel" || textLowerClean == "tunel?" || textLowerClean == "túnel?" ||
-		strings.Contains(textLowerClean, "peer id") ||
-		strings.Contains(textLowerClean, "link do tunel") || strings.Contains(textLowerClean, "link do túnel") ||
-		strings.Contains(textLowerClean, "endereco do tunel") || strings.Contains(textLowerClean, "endereço do túnel") ||
+	isTunnelQuery := text == "/tunel" || text == "/tunnel" || text == "/p2p" ||
+		textLowerClean == "tunel" || textLowerClean == "túnel" || textLowerClean == "tunnel" ||
+		textLowerClean == "tunel?" || textLowerClean == "túnel?" || textLowerClean == "tunnel?" ||
+		strings.Contains(textLowerClean, "peer id") || strings.Contains(textLowerClean, "peerid") ||
+		strings.Contains(textLowerClean, "psk") ||
+		strings.Contains(textLowerClean, "falar do tunnel") || strings.Contains(textLowerClean, "falar do tunel") || strings.Contains(textLowerClean, "falar do túnel") ||
+		strings.Contains(textLowerClean, "sobre o tunnel") || strings.Contains(textLowerClean, "sobre o tunel") || strings.Contains(textLowerClean, "sobre o túnel") ||
+		strings.Contains(textLowerClean, "status do tunnel") || strings.Contains(textLowerClean, "status do tunel") || strings.Contains(textLowerClean, "status do túnel") ||
+		strings.Contains(textLowerClean, "link do tunel") || strings.Contains(textLowerClean, "link do túnel") || strings.Contains(textLowerClean, "link do tunnel") ||
+		strings.Contains(textLowerClean, "endereco do tunel") || strings.Contains(textLowerClean, "endereço do túnel") || strings.Contains(textLowerClean, "endereco do tunnel") ||
 		strings.Contains(textLowerClean, "como está túnel") || strings.Contains(textLowerClean, "como esta túnel") ||
-		strings.Contains(textLowerClean, "como está o túnel") || strings.Contains(textLowerClean, "como esta o tunel") ||
-		strings.Contains(textLowerClean, "qual https") || strings.Contains(textLowerClean, "qual o https")
+		strings.Contains(textLowerClean, "como está o túnel") || strings.Contains(textLowerClean, "como esta o tunel") || strings.Contains(textLowerClean, "como está o tunnel") ||
+		strings.Contains(textLowerClean, "qual https") || strings.Contains(textLowerClean, "qual o https") ||
+		strings.Contains(textLowerClean, "url do tunel") || strings.Contains(textLowerClean, "url do tunnel") ||
+		strings.Contains(textLowerClean, "p2p tunnel") || strings.Contains(textLowerClean, "p2p tunel")
 
 	if isTunnelQuery {
 		tInfo := getTunnelLiveStatus()
 		if tInfo != nil && tInfo.Status != "" {
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("🚀 <b>HA P2P Tunnel:</b> %s\n\n", tInfo.Status))
+			sb.WriteString("🌐 <b>Status do HA P2P Tunnel</b>\n\n")
+			sb.WriteString(fmt.Sprintf("• <b>Status:</b> %s\n", tInfo.Status))
 			if tInfo.HttpsURL != "" {
-				sb.WriteString(fmt.Sprintf("🔗 <b>HTTPS 443:</b> %s\n", tInfo.HttpsURL))
+				sb.WriteString(fmt.Sprintf("• <b>HTTPS (Acesso Externo):</b>\n<a href=\"%s\">%s</a>\n\n", tInfo.HttpsURL, tInfo.HttpsURL))
 			}
 			if tInfo.PeerID != "" {
-				sb.WriteString(fmt.Sprintf("🆔 <b>Peer ID:</b> <code>%s</code>\n", tInfo.PeerID))
+				sb.WriteString(fmt.Sprintf("• <b>Peer ID (Rede Privada):</b>\n<code>%s</code>\n<i>(Toque no código acima para copiar)</i>\n\n", tInfo.PeerID))
 			}
 			if tInfo.PSK != "" {
-				sb.WriteString(fmt.Sprintf("🔑 <b>PSK:</b> <code>%s</code>\n", tInfo.PSK))
+				sb.WriteString(fmt.Sprintf("• <b>Senha PSK:</b>\n<code>%s</code>\n", tInfo.PSK))
 			} else {
-				sb.WriteString("🔑 <b>PSK:</b> Desativada (Acesso livre)\n")
+				sb.WriteString("• <b>Senha PSK:</b> <i>Desativada (Acesso livre)</i>\n")
 			}
-			sendTelegramMessage(token, userChatID, sb.String(), nil)
+
+			var markup *InlineKeyboardMarkup
+			if tInfo.HttpsURL != "" && strings.HasPrefix(tInfo.HttpsURL, "http") {
+				markup = &InlineKeyboardMarkup{
+					InlineKeyboard: [][]InlineKeyboardButton{
+						{
+							{
+								Text: "🌐 Abrir Home Assistant (HTTPS)",
+								URL:  tInfo.HttpsURL,
+							},
+						},
+					},
+				}
+			}
+
+			sendTelegramMessage(token, userChatID, sb.String(), markup)
 			return
 		} else {
 			sendTelegramMessage(token, userChatID, "⚠️ O complemento <b>HA P2P Tunnel</b> não está ativo ou não foi detectado no momento.", nil)
@@ -1422,9 +1506,10 @@ func sendNotificationToTargets(target, message string) ([]string, error) {
 		}
 	}
 
+	formattedMsg := formatTelegramHTML(message)
 	var sent []string
 	for _, cid := range targets {
-		err := sendTelegramMessage(token, cid, message, nil)
+		err := sendTelegramMessage(token, cid, formattedMsg, nil)
 		if err == nil {
 			sent = append(sent, cid)
 		}

@@ -1,6 +1,6 @@
 name: "IABoT"
 description: "Assistente IA Autônomo com Telegram Bot, Gemini AI (3.5-flash-lite / 3.1-flash-lite / 3.6-flash), controle de dispositivos e notificações"
-version: "1.4.3"
+version: "1.4.4"
 slug: "iabot"
 init: false
 arch:
