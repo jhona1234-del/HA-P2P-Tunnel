@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.4.2"
+	AppVersion       = "1.4.3"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
