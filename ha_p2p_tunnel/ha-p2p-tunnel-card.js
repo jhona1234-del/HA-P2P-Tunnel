@@ -269,13 +269,19 @@ class HAP2PTunnelCard extends HTMLElement {
     if (!this._hass || !this._built) return;
 
     const entity = this._hass.states['sensor.ha_p2p_tunnel_status'];
-    const isOnline = entity && (entity.state === 'Online' || entity.state === 'online');
+    const urlEntity = this._hass.states['sensor.ha_p2p_tunnel_https_url'];
+    const peerEntity = this._hass.states['sensor.ha_p2p_tunnel_peer_id'];
+
+    const hasActiveUrl = urlEntity && urlEntity.state && urlEntity.state.startsWith('http');
+    const hasPeer = peerEntity && peerEntity.state && peerEntity.state.startsWith('12D3');
+    const isOnline = (entity && (entity.state === 'Online' || entity.state === 'online')) || hasActiveUrl || hasPeer;
+
     const activeStreams = (entity && entity.attributes && entity.attributes.active_streams) || 0;
     
     // Resolve HTTPS URL
     let httpsUrl = (entity && entity.attributes && (entity.attributes.https_auth_url || entity.attributes.https_url)) || '';
-    if (!httpsUrl && this._hass.states['sensor.ha_p2p_tunnel_https_url']) {
-      const s = this._hass.states['sensor.ha_p2p_tunnel_https_url'].state;
+    if (!httpsUrl && urlEntity) {
+      const s = urlEntity.state;
       if (s && s !== 'unavailable' && s !== 'unknown' && s !== 'Iniciando...') {
         httpsUrl = s;
       }
@@ -283,8 +289,8 @@ class HAP2PTunnelCard extends HTMLElement {
 
     // Resolve Peer ID
     let peerId = (entity && entity.attributes && entity.attributes.peer_id) || '';
-    if (!peerId && this._hass.states['sensor.ha_p2p_tunnel_peer_id']) {
-      const s = this._hass.states['sensor.ha_p2p_tunnel_peer_id'].state;
+    if (!peerId && peerEntity) {
+      const s = peerEntity.state;
       if (s && s !== 'unavailable' && s !== 'unknown') {
         peerId = s;
       }
