@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.4.4"
+	AppVersion       = "1.4.5"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -321,6 +321,35 @@ func buildHAContext() string {
 	} else {
 		sb.WriteString("- Dispositivos ligados na casa: Todos desligados no momento.\n")
 	}
+
+	// Sensores da Planta Ficus
+	var ficusHum, ficusTemp, ficusBat string
+	for _, e := range entities {
+		if e.EntityID == "sensor.sensor_01_umidade" {
+			ficusHum = e.State
+		} else if e.EntityID == "sensor.sensor_01_temperatura" {
+			ficusTemp = e.State
+		} else if e.EntityID == "sensor.sensor_01_bateria" {
+			ficusBat = e.State
+		}
+	}
+	if ficusHum != "" || ficusTemp != "" {
+		if ficusHum == "unavailable" || ficusHum == "unknown" {
+			sb.WriteString("- Planta Ficus (Sala de Estar): Sensor Zigbee OFFLINE / INDISPONÍVEL no Home Assistant (último estado unavailable). Pilha ou sinal precisam ser checados.\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("- Planta Ficus (Sala de Estar): Umidade do solo: %s%%, Temperatura: %s°C, Bateria: %s%%\n", ficusHum, ficusTemp, ficusBat))
+		}
+	}
+
+	// Clima e Temperatura Ambiente
+	for _, e := range entities {
+		if strings.HasPrefix(e.EntityID, "weather.") {
+			sb.WriteString(fmt.Sprintf("- Clima (%s): %s, Temp: %v°C, Umidade: %v%%\n", e.EntityID, e.State, e.Attributes["temperature"], e.Attributes["humidity"]))
+			break
+		}
+	}
+
+	sb.WriteString("\nREGRA DE OURO: Use SOMENTE as informações reais acima. NUNCA invente sensores ou leituras numéricas que não estejam listadas aqui.\n")
 
 	return sb.String()
 }
