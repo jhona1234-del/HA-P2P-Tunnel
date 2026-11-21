@@ -82,10 +82,6 @@ REFRESH_TOKEN = CURRENT_SETTINGS.get("refresh_token", os.getenv("REFRESH_TOKEN",
 _cached_token = ""
 _token_expiry = 0
 CONVERSATION_HISTORY = []
-    except Exception as e:
-        safe_print(f"Erro ao salvar configurações: {e}")
-
-CURRENT_SETTINGS = load_settings()
 
 # ==============================================================================
 # COMUNICAÇÃO COM O HOME ASSISTANT
