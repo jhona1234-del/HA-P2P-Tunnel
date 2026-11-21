@@ -29,3 +29,6 @@ env/
 .env
 *.pem
 *.key
+
+*settings.json
+*.mp3

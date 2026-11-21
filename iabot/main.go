@@ -19,10 +19,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/kolonist/edgetts"
 )
 
 const (
-	AppVersion       = "1.4.5"
+	AppVersion       = "1.4.6"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -56,6 +58,7 @@ type IABoTSettings struct {
 	ModelsPriority    string                   `json:"models_priority"`
 	LastModelUsed     string                   `json:"last_model_used"`
 	VoiceResponseMode string                   `json:"voice_response_mode"` // "auto", "always", "never"
+	TTSVoice          string                   `json:"tts_voice"`           // "pt-BR-FranciscaNeural"
 	SystemPrompt      string                   `json:"system_prompt"`
 	TelegramUsers     map[string]*TelegramUser `json:"telegram_users"`
 	MessagesSent      int64                    `json:"messages_sent"`
@@ -106,6 +109,7 @@ func loadSettings() {
 		GeminiModel:       "gemini-3.5-flash-lite",
 		ModelsPriority:    "gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.6-flash",
 		VoiceResponseMode: "auto",
+		TTSVoice:          "pt-BR-FranciscaNeural",
 		SystemPrompt:      "Você é um assistente inteligente e prestativo para automação residencial integrado ao Home Assistant. Você é amigável, direto, prestativo e fala português do Brasil com naturalidade. Você tem controle direto dos dispositivos autorizados da casa.",
 		TelegramUsers:     make(map[string]*TelegramUser),
 	}
@@ -140,6 +144,9 @@ func loadSettings() {
 	}
 	if settings.VoiceResponseMode == "" {
 		settings.VoiceResponseMode = "auto"
+	}
+	if settings.TTSVoice == "" {
+		settings.TTSVoice = "pt-BR-FranciscaNeural"
 	}
 
 	// Migração obrigatória: garantir que o modelo padrão seja 3.5-flash-lite
@@ -695,8 +702,38 @@ func generateTTSAudio(text string) ([]byte, error) {
 	cleanText = strings.ReplaceAll(cleanText, "</code>", "")
 	cleanText = strings.ReplaceAll(cleanText, "<i>", "")
 	cleanText = strings.ReplaceAll(cleanText, "</i>", "")
+	cleanText = strings.ReplaceAll(cleanText, "<pre>", "")
+	cleanText = strings.ReplaceAll(cleanText, "</pre>", "")
 	cleanText = strings.TrimSpace(cleanText)
 
+	if cleanText == "" {
+		return nil, fmt.Errorf("texto vazio para TTS")
+	}
+
+	settingsMu.RLock()
+	voiceName := settings.TTSVoice
+	settingsMu.RUnlock()
+	if voiceName == "" {
+		voiceName = "pt-BR-FranciscaNeural"
+	}
+
+	// 1. Tenta Edge-TTS Neural de Alta Qualidade (pt-BR-FranciscaNeural)
+	etts := edgetts.New(edgetts.Args{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	speaker := etts.SpeakWithVoice(cleanText, voiceName)
+	audio, err := speaker.GetSound(ctx, edgetts.OutputFormatMp3)
+	if err == nil && len(audio) > 500 {
+		addLog("VOICE", fmt.Sprintf("Áudio TTS gerado com sucesso via voz neural [%s] (%d bytes)", voiceName, len(audio)))
+		return audio, nil
+	}
+
+	if err != nil {
+		addLog("WARN", fmt.Sprintf("Edge-TTS falhou (%v). Acionando fallback para Google Tradutor...", err))
+	}
+
+	// 2. Fallback para Google Tradutor caso o Edge-TTS falhe
 	if len(cleanText) > 200 {
 		cleanText = cleanText[:200]
 	}
@@ -1466,8 +1503,38 @@ func handleIncomingMessage(token string, msg *struct {
 
 		addLog("IA", fmt.Sprintf("Resposta para [%s]: %s", userName, reply))
 
-		// Determina se deve responder por Áudio
-		shouldReplyVoice := (voiceMode == "always") || (voiceMode == "auto" && isVoiceInput)
+		// Determina se deve responder por Áudio (modo configurado, áudio enviado ou pedido explícito em chat)
+		textLower := strings.ToLower(text)
+		wantsAudioInChat := strings.Contains(textLower, "responda por áudio") ||
+			strings.Contains(textLower, "responda por audio") ||
+			strings.Contains(textLower, "responde por áudio") ||
+			strings.Contains(textLower, "responde por audio") ||
+			strings.Contains(textLower, "manda áudio") ||
+			strings.Contains(textLower, "manda audio") ||
+			strings.Contains(textLower, "mande áudio") ||
+			strings.Contains(textLower, "mande audio") ||
+			strings.Contains(textLower, "manda um áudio") ||
+			strings.Contains(textLower, "manda um audio") ||
+			strings.Contains(textLower, "mande um áudio") ||
+			strings.Contains(textLower, "mande um audio") ||
+			strings.Contains(textLower, "fale por áudio") ||
+			strings.Contains(textLower, "fale por audio") ||
+			strings.Contains(textLower, "fale em áudio") ||
+			strings.Contains(textLower, "fale em audio") ||
+			strings.Contains(textLower, "fala por áudio") ||
+			strings.Contains(textLower, "fala por audio") ||
+			strings.Contains(textLower, "fala em áudio") ||
+			strings.Contains(textLower, "fala em audio") ||
+			strings.Contains(textLower, "me responde em áudio") ||
+			strings.Contains(textLower, "me responde em audio") ||
+			strings.Contains(textLower, "por áudio") ||
+			strings.Contains(textLower, "por audio") ||
+			strings.Contains(textLower, "em áudio") ||
+			strings.Contains(textLower, "em audio") ||
+			strings.Contains(textLower, "por voz") ||
+			strings.Contains(textLower, "em voz")
+
+		shouldReplyVoice := (voiceMode == "always") || (voiceMode == "auto" && isVoiceInput) || wantsAudioInChat
 
 		if shouldReplyVoice {
 			audioResp, err := generateTTSAudio(reply)
@@ -1663,6 +1730,7 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 			"models_priority":     settings.ModelsPriority,
 			"last_model_used":     settings.LastModelUsed,
 			"voice_response_mode": settings.VoiceResponseMode,
+			"tts_voice":           settings.TTSVoice,
 			"system_prompt":       settings.SystemPrompt,
 			"telegram_bot_token":  settings.TelegramBotToken,
 			"gemini_api_key":      settings.GeminiAPIKey,
@@ -1681,11 +1749,12 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 			TelegramBotToken  string `json:"telegram_bot_token"`
 			AdminChatID       string `json:"admin_chat_id"`
 			BotName           string `json:"bot_name"`
-			EnableAI          bool   `json:"enable_ai"`
+			EnableAI          *bool  `json:"enable_ai"`
 			GeminiAPIKey      string `json:"gemini_api_key"`
 			GeminiModel       string `json:"gemini_model"`
 			ModelsPriority    string `json:"models_priority"`
 			VoiceResponseMode string `json:"voice_response_mode"`
+			TTSVoice          string `json:"tts_voice"`
 			SystemPrompt      string `json:"system_prompt"`
 		}
 
@@ -1716,10 +1785,15 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		if payload.VoiceResponseMode != "" {
 			settings.VoiceResponseMode = strings.TrimSpace(payload.VoiceResponseMode)
 		}
+		if payload.TTSVoice != "" {
+			settings.TTSVoice = strings.TrimSpace(payload.TTSVoice)
+		}
 		if payload.SystemPrompt != "" {
 			settings.SystemPrompt = strings.TrimSpace(payload.SystemPrompt)
 		}
-		settings.EnableAI = payload.EnableAI
+		if payload.EnableAI != nil {
+			settings.EnableAI = *payload.EnableAI
+		}
 		settingsMu.Unlock()
 
 		_ = saveSettings()
