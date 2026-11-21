@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.4.6"
+	AppVersion       = "1.4.7"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -202,13 +202,16 @@ func getHAEntities() []HAEntityState {
 	return states
 }
 
-func callHAEntityService(domain, service, entityID string) error {
+func callHAService(domain, service string, data map[string]interface{}) error {
 	token := os.Getenv("SUPERVISOR_TOKEN")
 	if token == "" {
 		return fmt.Errorf("sem permissao SUPERVISOR_TOKEN")
 	}
 	url := fmt.Sprintf("http://supervisor/core/api/services/%s/%s", domain, service)
-	body, _ := json.Marshal(map[string]string{"entity_id": entityID})
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	body, _ := json.Marshal(data)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return err
@@ -220,7 +223,77 @@ func callHAEntityService(domain, service, entityID string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
 	return nil
+}
+
+func callHAEntityService(domain, service, entityID string) error {
+	return callHAService(domain, service, map[string]interface{}{"entity_id": entityID})
+}
+
+func executeActionTag(rawAction string) (string, error) {
+	rawAction = strings.TrimSpace(rawAction)
+	// Trata formato: call_service <domain> <service> <json ou entity_id>
+	if strings.HasPrefix(strings.ToLower(rawAction), "call_service ") {
+		parts := strings.SplitN(rawAction[len("call_service "):], " ", 3)
+		if len(parts) >= 2 {
+			domain := parts[0]
+			service := parts[1]
+			var data map[string]interface{}
+			if len(parts) == 3 && strings.HasPrefix(strings.TrimSpace(parts[2]), "{") {
+				_ = json.Unmarshal([]byte(parts[2]), &data)
+			}
+			if data == nil && len(parts) == 3 {
+				data = map[string]interface{}{"entity_id": strings.TrimSpace(parts[2])}
+			}
+			return fmt.Sprintf("%s.%s", domain, service), callHAService(domain, service, data)
+		}
+	}
+
+	// Trata formato: <domain>.<service> <entity_id> ou <service> <entity_id>
+	parts := strings.Fields(rawAction)
+	if len(parts) >= 2 {
+		first := parts[0]
+		target := parts[1]
+		if strings.Contains(first, ".") {
+			dp := strings.Split(first, ".")
+			return first, callHAEntityService(dp[0], dp[1], target)
+		}
+		if first == "turn_on" || first == "turn_off" {
+			domain := "homeassistant"
+			if strings.Contains(target, ".") {
+				domain = strings.Split(target, ".")[0]
+			}
+			return fmt.Sprintf("%s.%s", domain, first), callHAEntityService(domain, first, target)
+		}
+	}
+
+	return rawAction, fmt.Errorf("formato de acao desconhecido: %s", rawAction)
+}
+
+func processGeminiActions(reply string) string {
+	matches := reAction.FindAllString(reply, -1)
+	for _, fullTag := range matches {
+		inner := strings.TrimPrefix(fullTag, "[ACTION:")
+		inner = strings.TrimPrefix(inner, "[action:")
+		inner = strings.TrimSuffix(inner, "]")
+		inner = strings.TrimSpace(inner)
+		actionName, err := executeActionTag(inner)
+		if err != nil {
+			addLog("WARN", fmt.Sprintf("Falha ao executar ação IA [%s]: %v", inner, err))
+		} else {
+			addLog("HA", fmt.Sprintf("Ação executada com sucesso via IA: %s", actionName))
+		}
+	}
+	cleanReply := reAction.ReplaceAllString(reply, "")
+	cleanReply = strings.TrimSpace(cleanReply)
+	if cleanReply == "" && len(matches) > 0 {
+		return "✅ Comando executado com sucesso no Home Assistant!"
+	}
+	return cleanReply
 }
 
 
@@ -311,22 +384,39 @@ func buildHAContext() string {
 		sb.WriteString("- Túnel HA P2P: Offline ou não detectado.\n")
 	}
 
-	// Dispositivos ligados
+	// Dispositivos da Casa
 	entities := getHAEntities()
 	var turnedOn []string
+	var allControllable []string
+
 	for _, e := range entities {
-		if (strings.HasPrefix(e.EntityID, "light.") || strings.HasPrefix(e.EntityID, "switch.")) && e.State == "on" {
-			fn := e.EntityID
-			if n, ok := e.Attributes["friendly_name"].(string); ok && n != "" {
-				fn = n
-			}
+		if !strings.HasPrefix(e.EntityID, "light.") && !strings.HasPrefix(e.EntityID, "switch.") && !strings.HasPrefix(e.EntityID, "climate.") && !strings.HasPrefix(e.EntityID, "scene.") && !strings.HasPrefix(e.EntityID, "fan.") {
+			continue
+		}
+		if e.State == "unavailable" || strings.Contains(e.EntityID, "painel_led_") || strings.Contains(e.EntityID, "auto_entities") {
+			continue
+		}
+		fn := e.EntityID
+		if n, ok := e.Attributes["friendly_name"].(string); ok && n != "" {
+			fn = n
+		}
+		if e.State == "on" {
 			turnedOn = append(turnedOn, fn)
 		}
+		allControllable = append(allControllable, fmt.Sprintf("%s (%s): %s", fn, e.EntityID, e.State))
 	}
+
 	if len(turnedOn) > 0 {
-		sb.WriteString(fmt.Sprintf("- Dispositivos ligados na casa (%d): %s\n", len(turnedOn), strings.Join(turnedOn, ", ")))
+		sb.WriteString(fmt.Sprintf("- Dispositivos atualmente LIGADOS (%d): %s\n", len(turnedOn), strings.Join(turnedOn, ", ")))
 	} else {
-		sb.WriteString("- Dispositivos ligados na casa: Todos desligados no momento.\n")
+		sb.WriteString("- Dispositivos atualmente LIGADOS: Todos desligados no momento.\n")
+	}
+
+	if len(allControllable) > 0 {
+		sb.WriteString("- Dispositivos autorizados e disponíveis para você controlar:\n")
+		for _, dev := range allControllable {
+			sb.WriteString(fmt.Sprintf("  • %s\n", dev))
+		}
 	}
 
 	// Sensores da Planta Ficus
@@ -356,59 +446,180 @@ func buildHAContext() string {
 		}
 	}
 
-	sb.WriteString("\nREGRA DE OURO: Use SOMENTE as informações reais acima. NUNCA invente sensores ou leituras numéricas que não estejam listadas aqui.\n")
+	sb.WriteString("\nINSTRUÇÕES DE CONTROLE DE DISPOSITIVOS:\n")
+	sb.WriteString("Você tem controle TOTAL dos dispositivos listados acima. Quando o usuário pedir para ligar, acender, desligar, apagar ou ajustar qualquer dispositivo ou ar:\n")
+	sb.WriteString("1. Inclua SEMPRE a tag de ação correspondente na resposta, por exemplo: `[ACTION: light.turn_on light.corredor]`, `[ACTION: light.turn_off light.abajur]`, `[ACTION: switch.turn_on switch.ar_do_quarto]` ou `[ACTION: climate.turn_on climate.controle_remoto_ir_quarto_ar_condicionado_comfee]`.\n")
+	sb.WriteString("2. Em seguida, responda de forma amigável e descontraída confirmando que fez a ação.\n")
+	sb.WriteString("3. Use as informações reais acima e NUNCA invente sensores inexistentes.\n")
 
 	return sb.String()
 }
 
-func tryControlDevice(text string) (string, bool) {
-	textLower := strings.ToLower(strings.TrimSpace(text))
-	isTurnOn := strings.HasPrefix(textLower, "ligar ") || strings.HasPrefix(textLower, "acender ") || strings.HasPrefix(textLower, "liga ") || strings.HasPrefix(textLower, "ativa ")
-	isTurnOff := strings.HasPrefix(textLower, "desligar ") || strings.HasPrefix(textLower, "apagar ") || strings.HasPrefix(textLower, "desliga ") || strings.HasPrefix(textLower, "desativa ")
+func normalizeText(s string) string {
+	s = strings.ToLower(s)
+	replacer := strings.NewReplacer(
+		"á", "a", "à", "a", "ã", "a", "â", "a",
+		"é", "e", "ê", "e",
+		"í", "i",
+		"ó", "o", "ô", "o", "õ", "o",
+		"ú", "u", "ü", "u",
+		"ç", "c",
+	)
+	return strings.TrimSpace(replacer.Replace(s))
+}
 
+func extractDeviceCommand(text string) (isTurnOn, isTurnOff bool, target string) {
+	norm := normalizeText(text)
+
+	for _, prefix := range []string{"herbie, ", "herbie ", "ola herbie, ", "por favor, ", "por favor "} {
+		if strings.HasPrefix(norm, prefix) {
+			norm = strings.TrimPrefix(norm, prefix)
+			norm = strings.TrimSpace(norm)
+		}
+	}
+
+	turnOnVerbs := []string{"ligar", "liga", "ligue", "ligando", "acender", "acende", "acenda", "ativar", "ativa", "ative"}
+	turnOffVerbs := []string{"desligar", "desliga", "desligue", "desligando", "apagar", "apaga", "apague", "desativar", "desativa", "desative"}
+
+	var action string
+	var remainder string
+
+	for _, v := range turnOnVerbs {
+		if strings.HasPrefix(norm, v+" ") || norm == v {
+			action = "turn_on"
+			remainder = strings.TrimSpace(strings.TrimPrefix(norm, v))
+			break
+		}
+	}
+	if action == "" {
+		for _, v := range turnOffVerbs {
+			if strings.HasPrefix(norm, v+" ") || norm == v {
+				action = "turn_off"
+				remainder = strings.TrimSpace(strings.TrimPrefix(norm, v))
+				break
+			}
+		}
+	}
+
+	if action == "" {
+		return false, false, ""
+	}
+
+	if remainder == "tudo" || remainder == "todas as luzes" || remainder == "todas as luzes da casa" || strings.Contains(remainder, "todas as luzes") || strings.Contains(remainder, "tudo") {
+		return action == "turn_on", action == "turn_off", "ALL"
+	}
+
+	fillers := []string{
+		"a luz do ", "a luz da ", "a luz de ", "a luz ",
+		"o led do ", "o led da ", "o led ",
+		"a lampada do ", "a lampada da ", "a lampada de ", "a lampada ",
+		"o aparelho de ", "o aparelho do ", "o aparelho ",
+		"o ar condicionado do ", "o ar condicionado da ", "o ar-condicionado do ", "o ar-condicionado da ",
+		"o ar condicionado ", "o ar-condicionado ", "o ar do ", "o ar da ", "o ar ",
+		"o ", "a ", "os ", "as ", "meu ", "minha ", "do ", "da ", "de ", "pra mim", "por favor",
+	}
+
+	cleanTarget := remainder
+	for _, f := range fillers {
+		if strings.HasPrefix(cleanTarget, f) {
+			cleanTarget = strings.TrimSpace(strings.TrimPrefix(cleanTarget, f))
+		}
+		if strings.HasSuffix(cleanTarget, f) {
+			cleanTarget = strings.TrimSpace(strings.TrimSuffix(cleanTarget, f))
+		}
+	}
+
+	if cleanTarget == "" {
+		cleanTarget = remainder
+	}
+
+	return action == "turn_on", action == "turn_off", cleanTarget
+}
+
+func matchEntity(target string, entities []HAEntityState) *HAEntityState {
+	targetNorm := normalizeText(target)
+	if targetNorm == "" {
+		return nil
+	}
+
+	var bestEntity *HAEntityState
+	bestScore := -1
+
+	for i := range entities {
+		e := &entities[i]
+		if !strings.HasPrefix(e.EntityID, "light.") && !strings.HasPrefix(e.EntityID, "switch.") && !strings.HasPrefix(e.EntityID, "climate.") && !strings.HasPrefix(e.EntityID, "scene.") && !strings.HasPrefix(e.EntityID, "fan.") {
+			continue
+		}
+		if e.State == "unavailable" || strings.Contains(e.EntityID, "painel_led_") || strings.Contains(e.EntityID, "auto_entities") {
+			continue
+		}
+
+		fnNorm := ""
+		if fn, ok := e.Attributes["friendly_name"].(string); ok {
+			fnNorm = normalizeText(fn)
+		}
+		idNorm := normalizeText(e.EntityID)
+		idSuffix := idNorm
+		if idx := strings.Index(idNorm, "."); idx != -1 {
+			idSuffix = idNorm[idx+1:]
+		}
+
+		score := 0
+		if idNorm == targetNorm || fnNorm == targetNorm || idSuffix == targetNorm {
+			score = 100
+		} else if strings.EqualFold(idSuffix, targetNorm) {
+			score = 95
+		} else if strings.EqualFold(fnNorm, targetNorm) {
+			score = 90
+		} else if strings.HasPrefix(fnNorm, targetNorm) || strings.HasSuffix(fnNorm, targetNorm) {
+			score = 80
+		} else if strings.Contains(idSuffix, targetNorm) {
+			score = 75
+		} else if strings.Contains(fnNorm, targetNorm) {
+			score = 70
+		} else if strings.Contains(targetNorm, idSuffix) || strings.Contains(targetNorm, fnNorm) {
+			score = 60
+		}
+
+		if strings.HasPrefix(e.EntityID, "light.") && score > 0 {
+			score += 5
+		}
+
+		if score > bestScore && score >= 50 {
+			bestScore = score
+			bestEntity = e
+		}
+	}
+
+	return bestEntity
+}
+
+func tryControlDevice(text string) (string, bool) {
+	isTurnOn, isTurnOff, target := extractDeviceCommand(text)
 	if !isTurnOn && !isTurnOff {
 		return "", false
 	}
 
-	var targetName string
-	if isTurnOn {
-		for _, prefix := range []string{"ligar o ", "ligar a ", "ligar ", "acender o ", "acender a ", "acender ", "liga o ", "liga a ", "liga "} {
-			if strings.HasPrefix(textLower, prefix) {
-				targetName = strings.TrimSpace(textLower[len(prefix):])
-				break
-			}
-		}
-	} else {
-		for _, prefix := range []string{"desligar o ", "desligar a ", "desligar ", "apagar o ", "apagar a ", "apagar ", "desliga o ", "desliga a ", "desliga "} {
-			if strings.HasPrefix(textLower, prefix) {
-				targetName = strings.TrimSpace(textLower[len(prefix):])
-				break
-			}
-		}
-	}
-
-	if targetName == "" {
-		return "", false
-	}
-
 	entities := getHAEntities()
-	var matchedEntity *HAEntityState
-	for _, e := range entities {
-		if !strings.HasPrefix(e.EntityID, "light.") && !strings.HasPrefix(e.EntityID, "switch.") && !strings.HasPrefix(e.EntityID, "fan.") {
-			continue
-		}
-		fn := ""
-		if n, ok := e.Attributes["friendly_name"].(string); ok {
-			fn = strings.ToLower(n)
-		}
-		id := strings.ToLower(e.EntityID)
 
-		if strings.EqualFold(fn, targetName) || strings.EqualFold(id, targetName) || strings.Contains(fn, targetName) || strings.Contains(id, targetName) {
-			matchedEntity = &e
-			break
+	// Trata "desligar tudo" ou "apagar todas as luzes"
+	if target == "ALL" {
+		if isTurnOff {
+			count := 0
+			for _, e := range entities {
+				if strings.HasPrefix(e.EntityID, "light.") && e.State == "on" {
+					_ = callHAEntityService("light", "turn_off", e.EntityID)
+					count++
+				}
+			}
+			addLog("HA", fmt.Sprintf("Desligadas todas as luzes da casa (%d lâmpadas)", count))
+			return fmt.Sprintf("🌑 <b>Tudo apagado!</b> Desliguei %d luzes que estavam acesas na casa.", count), true
+		} else {
+			return "⚠️ Por segurança, não é possível acender todas as luzes da casa de uma só vez.", true
 		}
 	}
 
+	matchedEntity := matchEntity(target, entities)
 	if matchedEntity != nil {
 		parts := strings.Split(matchedEntity.EntityID, ".")
 		domain := parts[0]
@@ -529,6 +740,16 @@ var (
 	rePeerID           = regexp.MustCompile(`\b(12D3Koo[1-9A-HJ-NP-Za-km-z]{40,50})\b`)
 	reExistingHTML     = regexp.MustCompile(`(?i)</?(?:b|i|u|s|code|pre|blockquote)\b[^>]*>|<a\s+[^>]*>|</a>`)
 	reHTMLTagStrip     = regexp.MustCompile(`<a\s+(?:[^>]*?\s+)?href="([^"]*)"[^>]*>(.*?)</a>`)
+
+	// TTS Sanitizer & Action Parser Regexes
+	reAction   = regexp.MustCompile(`(?i)\[ACTION:[^\]]+\]`)
+	reHTML     = regexp.MustCompile(`<[^>]+>`)
+	reLink     = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+	reURL      = regexp.MustCompile(`https?://\S+`)
+	reMarkdown = regexp.MustCompile("[\x60\\*\\_\\#\\~\\>\\|]")
+	reBullets  = regexp.MustCompile(`[•▪▫●○►]`)
+	reEmoji    = regexp.MustCompile(`[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F700}-\x{1F77F}\x{1F780}-\x{1F7FF}\x{1F800}-\x{1F8FF}\x{1F900}-\x{1F9FF}\x{1FA00}-\x{1FA6F}\x{1FA70}-\x{1FAFF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{FE00}-\x{FE0F}\x{1F1E0}-\x{1F1FF}]`)
+	reSpaces   = regexp.MustCompile(`\s+`)
 )
 
 func fetchBotInfo(token string) {
@@ -694,18 +915,20 @@ func sendTelegramMessage(token, chatID, text string, markup *InlineKeyboardMarku
 	return nil
 }
 
-func generateTTSAudio(text string) ([]byte, error) {
-	// Limpa tags HTML
-	cleanText := strings.ReplaceAll(text, "<b>", "")
-	cleanText = strings.ReplaceAll(cleanText, "</b>", "")
-	cleanText = strings.ReplaceAll(cleanText, "<code>", "")
-	cleanText = strings.ReplaceAll(cleanText, "</code>", "")
-	cleanText = strings.ReplaceAll(cleanText, "<i>", "")
-	cleanText = strings.ReplaceAll(cleanText, "</i>", "")
-	cleanText = strings.ReplaceAll(cleanText, "<pre>", "")
-	cleanText = strings.ReplaceAll(cleanText, "</pre>", "")
-	cleanText = strings.TrimSpace(cleanText)
+func cleanTextForTTS(text string) string {
+	clean := reAction.ReplaceAllString(text, "")
+	clean = reHTML.ReplaceAllString(clean, "")
+	clean = reLink.ReplaceAllString(clean, "$1")
+	clean = reURL.ReplaceAllString(clean, "")
+	clean = reMarkdown.ReplaceAllString(clean, "")
+	clean = reBullets.ReplaceAllString(clean, "")
+	clean = reEmoji.ReplaceAllString(clean, "")
+	clean = reSpaces.ReplaceAllString(clean, " ")
+	return strings.TrimSpace(clean)
+}
 
+func generateTTSAudio(text string) ([]byte, error) {
+	cleanText := cleanTextForTTS(text)
 	if cleanText == "" {
 		return nil, fmt.Errorf("texto vazio para TTS")
 	}
@@ -930,7 +1153,7 @@ func callGeminiAI(userChatID, userPrompt string, audioBytes []byte) (string, err
 			},
 		})
 		parts = append(parts, GeminiPart{
-			Text: "Transcreva este áudio do usuário e atenda prestativo ao pedido sobre a casa ou tire a dúvida em português.",
+			Text: "Transcreva este áudio do usuário, responda com naturalidade e execute os comandos solicitados sobre a casa incluindo a tag de ação [ACTION: ...] quando for acionar ou desligar algum dispositivo. Seja prestativo e fale português do Brasil.",
 		})
 	} else {
 		parts = append(parts, GeminiPart{Text: userPrompt})
@@ -1407,6 +1630,30 @@ func handleIncomingMessage(token string, msg *struct {
 		return
 	}
 
+	if strings.HasPrefix(text, "/voz") {
+		parts := strings.Fields(text)
+		if len(parts) == 1 {
+			sendTelegramMessage(token, userChatID, fmt.Sprintf("🎙️ <b>Modo de Resposta por Voz:</b> <code>%s</code>\n\nComandos disponíveis:\n• <code>/voz auto</code> - Responde por áudio quando receber áudio ou for solicitado\n• <code>/voz sempre</code> - Responde sempre por voz em todas as mensagens\n• <code>/voz nunca</code> - Silencioso: responde apenas por texto", voiceMode), nil)
+			return
+		}
+		arg := strings.ToLower(parts[1])
+		newMode := "auto"
+		if arg == "sempre" || arg == "on" || arg == "always" {
+			newMode = "always"
+		} else if arg == "nunca" || arg == "off" || arg == "never" || arg == "silencio" {
+			newMode = "never"
+		} else if arg == "auto" {
+			newMode = "auto"
+		}
+		settingsMu.Lock()
+		settings.VoiceResponseMode = newMode
+		settingsMu.Unlock()
+		_ = saveSettings()
+		sendTelegramMessage(token, userChatID, fmt.Sprintf("✅ Modo de resposta por voz atualizado para: <b>%s</b>", newMode), nil)
+		addLog("INFO", fmt.Sprintf("Modo de voz alterado para [%s] por [%s]", newMode, userName))
+		return
+	}
+
 	// Consulta Rápida do Túnel P2P (Peer ID, HTTPS, PSK)
 	textLowerClean := strings.ToLower(strings.TrimSpace(text))
 	isTunnelQuery := text == "/tunel" || text == "/tunnel" || text == "/p2p" ||
@@ -1496,9 +1743,14 @@ func handleIncomingMessage(token string, msg *struct {
 			return
 		}
 
-		// Se o Gemini transcreveu e identificou controle de dispositivo:
-		if actionReply, handled := tryControlDevice(reply); handled {
-			reply = actionReply
+		// 1. Processa ações [ACTION: ...] emitidas pelo Gemini
+		reply = processGeminiActions(reply)
+
+		// 2. Se o Gemini não emitiu [ACTION: ...], verifica se o texto de entrada era um comando direto
+		if !isVoiceInput {
+			if actionReply, handled := tryControlDevice(text); handled {
+				reply = actionReply + "\n\n" + reply
+			}
 		}
 
 		addLog("IA", fmt.Sprintf("Resposta para [%s]: %s", userName, reply))
@@ -1535,6 +1787,9 @@ func handleIncomingMessage(token string, msg *struct {
 			strings.Contains(textLower, "em voz")
 
 		shouldReplyVoice := (voiceMode == "always") || (voiceMode == "auto" && isVoiceInput) || wantsAudioInChat
+		if voiceMode == "never" {
+			shouldReplyVoice = false
+		}
 
 		if shouldReplyVoice {
 			audioResp, err := generateTTSAudio(reply)
