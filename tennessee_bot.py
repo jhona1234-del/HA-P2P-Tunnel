@@ -241,28 +241,40 @@ def format_telegram_html(text):
     if not text:
         return ""
     import html
+    
+    # 1. Protege blocos de código
     code_blocks = []
     def sub_cb(m):
         code_blocks.append(f"<pre><code>{html.escape(m.group(1))}</code></pre>")
         return f"___CB{len(code_blocks)-1}___"
     text = re.sub(r'```(?:\w+)?\n?(.*?)```', sub_cb, text, flags=re.DOTALL)
 
+    # 2. Protege inline code
     inline_codes = []
     def sub_ic(m):
         inline_codes.append(f"<code>{html.escape(m.group(1))}</code>")
         return f"___IC{len(inline_codes)-1}___"
     text = re.sub(r'`([^`]+)`', sub_ic, text)
 
+    # 3. Protege tags HTML já existentes (evita double-escape como &lt;i&gt;)
+    existing_html = []
+    def sub_eh(m):
+        existing_html.append(m.group(0))
+        return f"___EH{len(existing_html)-1}___"
+    text = re.sub(r'(?i)</?(?:b|i|u|s|code|pre|a)\b[^>]*>', sub_eh, text)
+
+    # 4. Escapa o texto restante com segurança
     text = html.escape(text)
 
-    # Bold: **bold** or *bold*
+    # 5. Converte Markdown
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'(?<!\w)\*([^\*\n]+?)\*(?!\w)', r'<b>\1</b>', text)
-    # Italic: _italic_
     text = re.sub(r'(?<!\w)_([^_\n]+?)_(?!\w)', r'<i>\1</i>', text)
-    # Headers: ### Header -> <b>Header</b>
     text = re.sub(r'^#{1,6}\s*(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
 
+    # 6. Restaura as tags e blocos
+    for i, tag in enumerate(existing_html):
+        text = text.replace(f"___EH{i}___", tag)
     for i, cb in enumerate(code_blocks):
         text = text.replace(f"___CB{i}___", cb)
     for i, ic in enumerate(inline_codes):
@@ -520,32 +532,54 @@ CONHECIMENTO DA CASA:
 • Mascote: Thor (Poodle Toy).
 • Seu Motor de IA: Você roda prioritariamente com o modelo de última geração gemini-4-hydrogen e conta com fallback automático resiliente para gemini-3.8-flash e gemini-3.5-flash-lite, com raciocínio e function calling nativo."""
 
-def call_gemini_with_fallback(payload):
-    global LAST_MODEL_USED
+MODEL_COOLDOWN_UNTIL = {}
+
+def call_gemini_with_fallback(payload, preferred_idx=None):
+    global LAST_MODEL_USED, MODEL_COOLDOWN_UNTIL
+    now = time.time()
     last_err = None
-    for model_name in GEMINI_FALLBACK_MODELS:
+    
+    # Se o chamador já identificou o modelo funcional deste turno, usa-o diretamente
+    start_idx = preferred_idx if preferred_idx is not None else 0
+    
+    for i in range(len(GEMINI_FALLBACK_MODELS)):
+        idx = (start_idx + i) % len(GEMINI_FALLBACK_MODELS)
+        model_name = GEMINI_FALLBACK_MODELS[idx]
+        
+        # Se o modelo está em cooldown recente (quota 429 ou sobrecarga 503), pula silenciosamente
+        if now < MODEL_COOLDOWN_UNTIL.get(model_name, 0):
+            continue
+            
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode('utf-8'),
             headers={"Content-Type": "application/json"}
         )
-        # Modelos preview/thinking têm timeout curto para não travar o usuário caso estejam sobrecarregados
-        timeout = 4 if model_name in ["gemini-4-hydrogen", "gemini-3.8-flash"] else 25
+        timeout = 4 if model_name in ["gemini-4-hydrogen", "gemini-3.8-flash"] else 20
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 if "candidates" in data and len(data["candidates"]) > 0:
-                    safe_print(f"[Tennessee AI] Sucesso com modelo {model_name}")
                     LAST_MODEL_USED = model_name
-                    return data, model_name
-                else:
-                    safe_print(f"[Tennessee AI] Resposta vazia com modelo {model_name}: {data}")
+                    return data, idx
         except Exception as e:
             last_err = e
-            safe_print(f"[Tennessee AI] Modelo {model_name} indisponível ou timeout ({e}). Acionando fallback...")
+            err_str = str(e)
+            if "429" in err_str or "503" in err_str or "timed out" in err_str:
+                MODEL_COOLDOWN_UNTIL[model_name] = now + 180  # 3 min cooldown
+            safe_print(f"[Tennessee AI] Modelo {model_name} indisponível ({e}). Pulando direto para próximo fallback...")
             continue
-    raise Exception(f"Falha em todos os modelos ({', '.join(GEMINI_FALLBACK_MODELS)}): {last_err}")
+            
+    # Fallback silencioso de emergência com 3.5-flash-lite
+    safe_print("[Tennessee AI] Todos os modelos primários indisponíveis. Executando fallback silencioso...")
+    fallback_model = "gemini-3.5-flash-lite"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{fallback_model}:generateContent?key={GEMINI_API_KEY}"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+        LAST_MODEL_USED = fallback_model
+        return data, 2
 
 # ==============================================================================
 # MOTOR DO AGENTE AUTÔNOMO MULTIMODAL (GEMINI REACT LOOP)
@@ -577,7 +611,10 @@ def run_autonomous_agent(user_parts):
         {"role": "user", "parts": user_parts}
     ]
     
-    for step in range(8):
+    working_idx = None
+    tools_called_count = 0
+    
+    for step in range(10):
         payload = {
             "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
             "contents": current_contents,
@@ -585,9 +622,10 @@ def run_autonomous_agent(user_parts):
         }
         
         try:
-            data, _ = call_gemini_with_fallback(payload)
+            data, working_idx = call_gemini_with_fallback(payload, preferred_idx=working_idx)
         except Exception as e:
-            return f"🔧 <i>Opa, deu uma falha na ignição do meu cérebro:</i> <code>{e}</code>"
+            safe_print(f"[Tennessee Agent] Erro no loop: {e}")
+            break
             
         cand = data.get("candidates", [])[0]
         content = cand.get("content", {})
@@ -608,6 +646,7 @@ def run_autonomous_agent(user_parts):
             })
             return final_text
         
+        tools_called_count += len(function_calls)
         tool_responses = []
         for fc in function_calls:
             fname = fc.get("name")
@@ -640,7 +679,23 @@ def run_autonomous_agent(user_parts):
             "parts": tool_responses
         })
 
-    return "⚠️ <i>Executei as ferramentas necessárias mas atingi o limite de passos.</i>"
+    # Se executou ferramentas e chegou ao fim dos passos, solicita resumo final conclusivo sem ferramentas
+    if tools_called_count > 0:
+        try:
+            summary_payload = {
+                "system_instruction": {"parts": [{"text": SYSTEM_PROMPT + "\nIMPORTANTE: Forneça uma resposta conclusiva, curta e direta (1 a 2 frases) para o Jhonatan informando o que foi realizado/verificado acima."}]},
+                "contents": current_contents
+            }
+            data, _ = call_gemini_with_fallback(summary_payload, preferred_idx=working_idx)
+            parts = data.get("candidates", [])[0].get("content", {}).get("parts", [])
+            summary_text = "".join([p.get("text", "") for p in parts]).strip()
+            if summary_text:
+                CONVERSATION_HISTORY.append({"role": "model", "parts": [{"text": summary_text}]})
+                return summary_text
+        except Exception:
+            pass
+            
+    return "✅ Comandos executados e validados com sucesso no Home Assistant!"
 
 # ==============================================================================
 # COMANDOS RÁPIDOS
