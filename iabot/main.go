@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	AppVersion       = "1.4.7"
+	AppVersion       = "1.4.8"
 	AppDeveloper     = "Jhonatan Garcia (jhona1234)"
 	DefaultPort      = "8099"
 	SettingsFilePath = "/data/iabot_settings.json"
@@ -289,6 +289,11 @@ func processGeminiActions(reply string) string {
 		}
 	}
 	cleanReply := reAction.ReplaceAllString(reply, "")
+	// Limpa blocos vazios de crases residuais (` ` ou ``` ```)
+	reEmptyCode := regexp.MustCompile("`{1,3}[\\s\\r\\n]*`{1,3}")
+	cleanReply = reEmptyCode.ReplaceAllString(cleanReply, "")
+	reMultiNewlines := regexp.MustCompile(`\n{3,}`)
+	cleanReply = reMultiNewlines.ReplaceAllString(cleanReply, "\n\n")
 	cleanReply = strings.TrimSpace(cleanReply)
 	if cleanReply == "" && len(matches) > 0 {
 		return "✅ Comando executado com sucesso no Home Assistant!"
@@ -448,9 +453,10 @@ func buildHAContext() string {
 
 	sb.WriteString("\nINSTRUÇÕES DE CONTROLE DE DISPOSITIVOS:\n")
 	sb.WriteString("Você tem controle TOTAL dos dispositivos listados acima. Quando o usuário pedir para ligar, acender, desligar, apagar ou ajustar qualquer dispositivo ou ar:\n")
-	sb.WriteString("1. Inclua SEMPRE a tag de ação correspondente na resposta, por exemplo: `[ACTION: light.turn_on light.corredor]`, `[ACTION: light.turn_off light.abajur]`, `[ACTION: switch.turn_on switch.ar_do_quarto]` ou `[ACTION: climate.turn_on climate.controle_remoto_ir_quarto_ar_condicionado_comfee]`.\n")
-	sb.WriteString("2. Em seguida, responda de forma amigável e descontraída confirmando que fez a ação.\n")
-	sb.WriteString("3. Use as informações reais acima e NUNCA invente sensores inexistentes.\n")
+	sb.WriteString("1. Inclua a tag de ação correspondente: [ACTION: light.turn_on light.corredor], [ACTION: light.turn_off light.abajur], etc. NUNCA coloque as tags [ACTION: ...] dentro de crases ou blocos de código.\n")
+	sb.WriteString("2. Se o usuário pedir para inverter estados ou fazer múltiplas ações, emita todas as tags [ACTION: ...] necessárias na mesma resposta.\n")
+	sb.WriteString("3. Você NÃO possui função sleep/delay no chat. Se o usuário pedir para esperar segundos antes de outra ação, execute as ações imediatas e avise com simpatia que pausas devem ser feitas por automação no Home Assistant.\n")
+	sb.WriteString("4. Responda de forma rápida, amigável e descontraída confirmando que fez a ação.\n")
 
 	return sb.String()
 }
